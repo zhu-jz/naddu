@@ -16,8 +16,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.join(root, 'script
   const output = path.join(root, 'build/minifish.js');
   fs.mkdirSync(path.dirname(output), {recursive: true});
   fs.writeFileSync(output, bundle(['constants.mjs', 'generated/magics.mjs', 'bitboard.mjs',
-    'generated/nnue.mjs', 'nnue.mjs', 'position.mjs', 'movegen.mjs', 'evaluate.mjs', 'notation.mjs'],
+    'generated/nnue.mjs', 'nnue.mjs', 'position.mjs', 'movegen.mjs', 'evaluate.mjs', 'notation.mjs', 'tt.mjs', 'history.mjs'],
     ['MAX_PLY','make_move','c_div','make_key','sq_bb','attacks_bb_rook','attacks_bb_bishop','BetweenBB',
-      'NNUE','nnue_evaluate','evaluate','Position','do_move','undo_move','generate_legal','StartFEN','set_position','uci_move']));
+      'NNUE','nnue_evaluate','evaluate','Position','do_move','undo_move','generate_legal','StartFEN','set_position','uci_move', 'TT','tt_probe','tt_allocate']));
   console.log('Built build/minifish.js');
 }

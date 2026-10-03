@@ -220,9 +220,69 @@ def sequences():
     return {"steps": steps, "roots": roots}
 
 
+def table_fixtures():
+    import tt
+    from constants import VALUE_NONE
+    tt.tt_allocate(128)
+    operations = []
+    for i in range(100):
+        if i % 7 == 0:
+            tt.tt_new_search()
+            operations.append({"kind": "generation", "generation": tt.TT.generation8})
+        if i == 80:
+            tt.tt_clear()
+            operations.append({"kind": "clear", "generation": tt.TT.generation8})
+        key = [0, 1, 2, 3, 4, 5, 6, (1 << 64)-1, (1 << 64)-2][i % 9]
+        hit, entry = tt.tt_probe(key)
+        before = {"hit": hit, "slot": entry.slot, "packed": str(entry.packed)}
+        value = [-32000, VALUE_NONE, 65535, 31744, -32769, i*1024][i % 6]
+        pv, bound, depth, move, ev = bool(i % 2), i % 4, [-6, 1, 20, 2, 15][i % 5], [0, 65, 65535, 12][i % 4], -i*731
+        tt.tte_save(entry, key, value, pv, bound, depth, move, ev)
+        after = {"packed": str(entry.packed), "move": tt.tte_move(entry), "value": tt.tte_value(entry),
+                 "eval": tt.tte_eval(entry), "depth": tt.tte_depth(entry), "pv": tt.tte_is_pv(entry),
+                 "bound": tt.tte_bound(entry), "hashfull": tt.tt_hashfull()}
+        operations.append({"kind": "save", "key": str(key), "args": [value,pv,bound,depth,move,ev], "before": before, "after": after})
+    conversions = []
+    for v in [32002,32000,31999,31872,31744,31743,-32000,-31999,-31872,-31744,-31743,0]:
+        for ply in (0,3,127):
+            for r50 in (0,90,99,100):
+                conversions.append([v,ply,r50,tt.value_to_tt(v,ply),tt.value_from_tt(v,ply,r50)])
+    from position import Position, do_move, gives_check
+    from uci import StartFEN, uci_to_move
+    from constants import from_sq, to_sq
+    import history as h
+    pos = Position()
+    pos.set(StartFEN)
+    for text in ("e2e4","e7e5","g1f3","b8c6","f1b5","a7a6"):
+        m = uci_to_move(pos,text)
+        pos.st.currentMove = m
+        pos.st.history = pos.counterMoveHistory[pos.board[from_sq(m)]][to_sq(m)]
+        do_move(pos,m,gives_check(pos,pos.st,m))
+    histories = []
+    for v in (-100000,-50000,-7183,-1024,-1,0,1,1024,7183,50000,100000,256,-256):
+        h.history_update(pos.mainHistory,0,1234,v)
+        h.continuation_history_update(pos.counterMoveHistory[2][12],512,v)
+        h.capture_history_update(pos.captureHistory,2,12,5,v)
+        h.correction_history_update(pos.correctionHistory,0,pos,v)
+        h.non_pawn_correction_history_update(pos.nonPawnCorrectionHistory,0,0,pos,v)
+        h.non_pawn_correction_history_update(pos.nonPawnCorrectionHistory,1,0,pos,-v)
+        h.update_continuation_histories(pos,2,12,v)
+        move = uci_to_move(pos,"b5c6")
+        h.update_quiet_histories(pos,move,v)
+        histories.append({"bonus": v, "values": [pos.mainHistory[0][1234],pos.counterMoveHistory[2][12][512],
+                pos.captureHistory[2][12][5],pos.correctionHistory[0][pos.st.pawnKey&16383],
+                pos.nonPawnCorrectionHistory[0][0][pos.st.nonPawnKey[0]&8191],
+                pos.nonPawnCorrectionHistory[1][0][pos.st.nonPawnKey[1]&8191], h.correction_value(pos)],
+                "killers": pos.killers[pos.st.ply][:], "countermove": pos.counterMoves[pos.board[to_sq(pos.stack[pos.st_idx-1].currentMove)]][to_sq(pos.stack[pos.st_idx-1].currentMove)],
+                "continuations": [pos.stack[pos.st_idx-1-i].history[2*64+12] for i in range(6)],
+                "main_quiet": pos.mainHistory[0][move&4095]})
+    return {"tt": operations, "conversions": conversions, "histories": histories,
+            "stat": [[d,h.stat_bonus(d),h.stat_malus(d)] for d in range(16)]}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -238,6 +298,8 @@ def main():
                 result = primitives()
             elif args.mode == "sequences":
                 result = sequences()
+            elif args.mode == "tables":
+                result = table_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
