@@ -15,7 +15,8 @@ export function bundle(files, publicNames) {
 if (process.argv[1] && path.resolve(process.argv[1]) === path.join(root, 'scripts/build.mjs')) {
   const output = path.join(root, 'build/minifish.js');
   fs.mkdirSync(path.dirname(output), {recursive: true});
-  fs.writeFileSync(output, bundle(['constants.mjs', 'generated/magics.mjs', 'bitboard.mjs'],
-    ['MAX_PLY','make_move','c_div','make_key','sq_bb','attacks_bb_rook','attacks_bb_bishop','BetweenBB']));
+  fs.writeFileSync(output, bundle(['constants.mjs', 'generated/magics.mjs', 'bitboard.mjs',
+    'generated/nnue.mjs', 'nnue.mjs', 'evaluate.mjs'],
+    ['MAX_PLY','make_move','c_div','make_key','sq_bb','attacks_bb_rook','attacks_bb_bishop','BetweenBB','NNUE','nnue_evaluate','evaluate']));
   console.log('Built build/minifish.js');
 }
