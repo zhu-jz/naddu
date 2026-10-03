@@ -280,9 +280,56 @@ def table_fixtures():
             "stat": [[d,h.stat_bonus(d),h.stat_malus(d)] for d in range(16)]}
 
 
+def picker_fixtures():
+    from position import Position, is_capture
+    from movegen import generate_legal, ExtMove
+    from constants import make_move, to_sq
+    import movepick as mp
+    fens = [s["fen"] for s in json.loads((ROOT / "tests/fixtures/positions.json").read_text())]
+    result = []
+    for fen in fens:
+        for kind, depth, skip_after in [("main",1,999),("main",5,3),("qs",0,999),("qs",-1,999),("qs",-5,999),("probcut",-208,999),("probcut",825,999)]:
+            for tt_choice in (0,1,2):
+                pos = Position()
+                pos.set(fen)
+                pos.st.ply = 3
+                for c in range(2):
+                    pos.mainHistory[c][:] = [((i*13+c*31)%255)-128 for i in range(4096)]
+                for i in range(7):
+                    row = pos.counterMoveHistory[i+1][i]
+                    row[:] = type(row)("b", [((j*11+i*29)%255)-128 for j in range(1024)])
+                    pos.stack[i].history = row
+                    pos.stack[i].currentMove = make_move(8+i,16+i)
+                for pc in range(16):
+                    for s in range(64):
+                        pos.captureHistory[pc][s][:] = [((pc*1103+s*117+t*101)%60000)-30000 for t in range(8)]
+                legal = [e.move for e in generate_legal(pos)]
+                quiets = [m for m in legal if not is_capture(pos,m)]
+                pos.killers[3][:] = (quiets+[0,0])[:2]
+                prev_sq = to_sq(pos.stack[pos.st_idx-1].currentMove)
+                pos.counterMoves[pos.board[prev_sq]][prev_sq] = quiets[-1] if quiets else 0
+                ttm = 0 if tt_choice == 0 else (legal[0] if legal and tt_choice == 1 else 65535)
+                if kind == "main": mp.mp_init(pos,ttm,depth,3)
+                elif kind == "qs": mp.mp_init_q(pos,ttm,depth, to_sq(legal[0]) if legal else 64)
+                else: mp.mp_init_probcut(pos,ttm,depth)
+                order = []
+                while True:
+                    move = mp.next_move(pos,len(order) >= skip_after)
+                    if not move: break
+                    order.append([move,pos.st.stage,pos.st.cur_idx])
+                    if len(order) > 256: raise RuntimeError("Move picker did not terminate")
+                result.append({"fen": fen,"kind": kind,"depth": depth,"skip_after": skip_after,"tt_choice": tt_choice,"order": order})
+    sorts = []
+    for limit in (-20,0,20):
+        moves = [ExtMove(i+1,v) for i,v in enumerate([0,-30,20,20,-5,30,0,20])]
+        mp.partial_insertion_sort(moves,limit)
+        sorts.append({"limit": limit,"order": [[m.move,m.value] for m in moves]})
+    return {"pickers": result,"sorts": sorts}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -300,6 +347,8 @@ def main():
                 result = sequences()
             elif args.mode == "tables":
                 result = table_fixtures()
+            elif args.mode == "pickers":
+                result = picker_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
