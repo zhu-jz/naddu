@@ -1,0 +1,10 @@
+{
+  "name": "naddu",
+  "private": true,
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "reference": "node scripts/reference.mjs",
+    "parity": "node scripts/parity.mjs"
+  }
+}
