@@ -354,9 +354,72 @@ def qsearch_fixtures():
     return cases
 
 
+def history_digest(pos):
+    import struct
+    digest = hashlib.sha256()
+    for table in (pos.mainHistory,pos.correctionHistory):
+        for row in table:
+            digest.update(struct.pack("<"+"b"*len(row),*row))
+    for piece in pos.counterMoveHistory:
+        for row in piece:
+            digest.update(bytes(row))
+    for table in (pos.captureHistory,pos.nonPawnCorrectionHistory):
+        for rows in table:
+            for row in rows:
+                digest.update(struct.pack("<"+"h"*len(row),*row))
+    for row in pos.counterMoves:
+        digest.update(struct.pack("<"+"H"*len(row),*row))
+    return digest.hexdigest()
+
+
+def mainsearch_fixtures():
+    from position import Position
+    from search import search_node, init_search_sentinels, RootMoves, Limits, Threads
+    from movegen import generate_legal
+    from timeman import now, time_init
+    from uci import position
+    import tt
+    fens = [s["fen"] for s in json.loads((ROOT / "tests/fixtures/positions.json").read_text())]
+    result = []
+    for fen in fens:
+        for depth, nt, alpha, beta, cut, warm in [(1,1,-32001,32001,False,False),(3,1,-32001,32001,False,False),
+                (6,1,-32001,32001,False,False),(10,1,-32001,32001,False,False),(6,0,0,1,True,False),(10,0,-1,0,False,True)]:
+            tt.tt_allocate(1)
+            Limits.reset()
+            Limits.startTime = now()
+            time_init(0,0,Limits)
+            Threads.stop = False
+            root = Position(search_worker=False)
+            position(root,"position fen "+fen)
+            pos = Position()
+            pos.copy_root_from(root)
+            pos.rootMoves = RootMoves()
+            legal = generate_legal(root)
+            pos.rootMoves.size = len(legal)
+            for i,e in enumerate(legal): pos.rootMoves.move[i].reset_for_search(e.move)
+            if not legal: continue
+            pos.pvLast = len(legal)
+            pos.rootDepth = depth
+            pos.rootDelta = 64002
+            init_search_sentinels(pos)
+            for st in pos.stack[pos.st_idx:pos.st_idx+3]:
+                st.currentMove = st.excludedMove = st.moveCount = 0
+                st.ttHit = False
+                st.staticEval = 0
+                st.history = None
+            with contextlib.redirect_stdout(io.StringIO()):
+                if warm: search_node(pos,-32001,32001,6,False,1)
+                value = search_node(pos,alpha,beta,depth,cut,nt)
+            result.append({"fen":fen,"depth":depth,"nt":nt,"alpha":alpha,"beta":beta,"cut":cut,"warm":warm,
+                    "value":value,"nodes":pos.nodes,"selDepth":pos.selDepth,"pv":pos.pvArray[0],
+                    "rootMoves":[[rm.pv[:rm.pvSize],rm.score,rm.averageScore,rm.selDepth] for rm in pos.rootMoves.move[:pos.rootMoves.size]],
+                    "tt":[[i,str(p)] for i,p in enumerate(tt.TT.table) if p],"histories":history_digest(pos)})
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -378,6 +441,8 @@ def main():
                 result = picker_fixtures()
             elif args.mode == "qsearch":
                 result = qsearch_fixtures()
+            elif args.mode == "mainsearch":
+                result = mainsearch_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
