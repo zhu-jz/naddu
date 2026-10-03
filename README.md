@@ -106,9 +106,12 @@ Python through `uv` for the default offline runner.
 npm run build
 npm test
 npm run parity -- 13
+npm run parity:benchmark
 npm run test:browser
 ```
 
 The browser check uses an installed Chromium browser (`CHROME` can select its
 executable). See the [port plan](docs/minifish-port-plan.md) for the acceptance
-contract and implementation milestones.
+contract and implementation milestones, and the
+[validation report](docs/minifish-port-validation.md) for the exact benchmark
+results, branch coverage and reproduction commands.

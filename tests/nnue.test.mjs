@@ -10,9 +10,12 @@ import {bundle} from '../scripts/build.mjs';
 const fixtures = JSON.parse(fs.readFileSync(new URL('./fixtures/positions.json', import.meta.url)));
 
 test('network export has the exact integer count, bytes and signed weights', () => {
+  const expected=JSON.parse(fs.readFileSync(new URL('./fixtures/network.json',import.meta.url)));
   const bytes = Buffer.from(NETWORK_BASE64, 'base64');
-  assert.equal(bytes.length, 98690);
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), NETWORK_SHA256);
+  assert.equal(bytes.length,expected.bytes);
+  assert.equal(bytes.length/2,expected.integers);
+  assert.equal(createHash('sha256').update(bytes).digest('hex'),expected.sha256);
+  assert.equal(NETWORK_SHA256,expected.sha256);
   assert.equal(Math.min(...NNUE.weights), -200);
   assert.equal(Math.max(...NNUE.weights), 132);
   assert.equal(NNUE.outputBias, 2132);

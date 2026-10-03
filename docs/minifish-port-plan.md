@@ -267,3 +267,10 @@ evaluation, histories, TT, move picker, search, root driver, time management,
 benchmark and UCI code. Ran the baseline searches, repetition checks, perft,
 accumulator checks and targeted reference tracing described above. Added this
 plan only; no implementation stage beyond step 0 has been completed.
+
+## Subsequent implementation
+
+All implementation milestones are now completed and audited in
+[Minifish port validation](minifish-port-validation.md). The investigation above
+records the original baseline and decisions; the validation document records the
+delivered release, commits, exact public benchmark results and reproduction steps.

@@ -1,0 +1,6 @@
+# Keep our build inputs and generated release reproducible on Windows too.
+# The supplied minifish-python source retains its original, pinned bytes.
+src/** text eol=lf
+scripts/** text eol=lf
+tests/** text eol=lf
+naddu.js text eol=lf

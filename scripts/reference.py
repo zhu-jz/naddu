@@ -468,9 +468,19 @@ def control_fixtures():
     return {"formulas":formulas,"cases":cases}
 
 
+def network_fixture():
+    import struct
+    import nnue_weights as weights
+    integers = [value for color in weights.FEATURE_TRANSFORMER_WEIGHTS
+                for piece in color for square in piece for value in square]
+    integers += weights.FEATURE_TRANSFORMER_BIASES + weights.OUTPUT_WEIGHTS + [weights.OUTPUT_BIAS]
+    packed = struct.pack("<"+"h"*len(integers),*integers)
+    return {"integers":len(integers),"bytes":len(packed),"sha256":hashlib.sha256(packed).hexdigest()}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "network", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -482,6 +492,8 @@ def main():
         try:
             if args.mode == "fixtures":
                 result = fixtures()
+            elif args.mode == "network":
+                result = network_fixture()
             elif args.mode == "primitives":
                 result = primitives()
             elif args.mode == "sequences":

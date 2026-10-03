@@ -1,0 +1,19 @@
+{
+  "depth": 13,
+  "positions": 47,
+  "command": "bench",
+  "nodes": 2526355,
+  "normalized_sha256": "a578d597642a65d71eb8d2b9bc3a93c8397ab5341bc2489825548b983c6d5ff8",
+  "reference_manifest_sha256": "17ac876a8ef28a3e51fc9e8057e2c600fddd538a86295643cf2e6cfe368c4f2d",
+  "engine_sha256": "69b797724157cab4124deb77197afd272e91f091a1eb6701dac91fc301ec0d80",
+  "runtimes": {
+    "python": {
+      "milliseconds": 208025,
+      "nps": 12144
+    },
+    "javascript": {
+      "milliseconds": 19696,
+      "nps": 128267
+    }
+  }
+}

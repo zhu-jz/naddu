@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
 import {root,reference} from './reference.mjs';
 import {Position} from '../src/position.mjs';
 import {set_position} from '../src/notation.mjs';
@@ -37,7 +38,10 @@ export function runJavaScript(commands,depth = 5) {
 export function benchmarkCommands() { return ['ucinewgame',...BENCH_POSITIONS.map(s=>s.startsWith('setoption') ? s : 'position fen '+s)]; }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const depth = Number(process.argv[2]||13), expected = reference('benchmark',{depth});
+  const depth = Number(process.argv[2]||13), captured=process.argv.includes('--captured');
+  const expected = captured ? JSON.parse(fs.readFileSync(path.join(root,`tests/fixtures/bench-depth${depth}.json`))) : reference('benchmark',{depth});
+  fs.mkdirSync(path.join(root,'build'),{recursive:true});
+  fs.writeFileSync(path.join(root,`build/bench-depth${depth}-python.json`),JSON.stringify(expected)+'\n');
   const actual = runJavaScript(benchmarkCommands(),depth);
   for (let i = 0; i < expected.length; i++) {
     try { assert.deepEqual(actual[i],expected[i]); }
@@ -48,5 +52,13 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
   }
   assert.equal(actual.length,expected.length);
+  const released=spawnSync(process.execPath,[path.join(root,'naddu.js'),`bench 16 1 ${depth}`],{encoding:'utf8',timeout:3600000,maxBuffer:64*1024*1024,windowsHide:true});
+  assert.equal(released.status,0,released.stderr);
+  const lines=released.stdout.split(/\r?\n/).filter(s=>(s.startsWith('info depth') && s.includes(' score ')) || s.startsWith('bestmove')).map(normalized);
+  assert.deepEqual(lines,expected.flatMap(r=>r.output),'released UCI benchmark iterations');
+  const nodes=actual.reduce((n,r)=>n+r.nodes_after_reporting,0);
+  assert.match(released.stderr,new RegExp(`Nodes searched  : ${nodes}\\b`),'released benchmark total');
+  fs.writeFileSync(path.join(root,`build/bench-depth${depth}-js.json`),JSON.stringify(actual)+'\n');
+  fs.writeFileSync(path.join(root,`build/bench-depth${depth}-uci.txt`),released.stdout);
   console.log(`Exact parity: ${actual.length} benchmark positions at depth ${depth}, ${actual.reduce((n,r)=>n+r.nodes_after_reporting,0)} moves counted after reporting.`);
 }
