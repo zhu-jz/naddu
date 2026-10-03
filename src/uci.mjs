@@ -49,7 +49,10 @@ export class EngineUCI {
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
-    if (this.appliedHash!==EngineOptions.Hash) { this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash); }
+    if (this.appliedHash!==EngineOptions.Hash) {
+      if (Threads.sleeping) finish_reporting();
+      this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash);
+    }
   }
   setoption(command) {
     const match = /^setoption\s+name\s+(.+?)(?:\s+value\s+(.*))?$/i.exec(command);
@@ -61,6 +64,7 @@ export class EngineUCI {
     else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) EngineOptions[name]=Number(value);
   }
   go(command) {
+    if (Threads.sleeping) finish_reporting();
     this.process_settings(); Limits.reset(); Limits.startTime=now();
     const tokens=command.split(' '); let ponder=false;
     for (let i=1;i<tokens.length;i++) {

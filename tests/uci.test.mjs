@@ -23,6 +23,13 @@ test('public benchmark uses all Python positions and preserves warm state',()=>{
   assert.match(result.stderr,new RegExp('Nodes searched  : '+expected.reduce((sum,r)=>sum+r.nodes_after_reporting,0)+'\\b'));
   assert.equal(result.stdout.split('\n').filter(s=>s.startsWith('position fen')).length,47);
 });
+test('public UCI preserves warm searches, new games, options and MultiPV',()=>{
+  const expected=fixture('lifecycle-depth5.json');
+  const commands=expected.commands.flatMap(command=>command.startsWith('position') ? [command,'go depth 5'] : [command]);
+  const result=spawnSync(process.execPath,[executable.pathname.replace(/^\/([A-Z]:)/,'$1'),...commands],{encoding:'utf8',timeout:15000});
+  assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(scoreLines(result.stdout.trim().split(/\r?\n/)),expected.results.flatMap(r=>r.output));
+});
 test('released classic Worker preserves diagnostics, aliases, perft and root search',()=>{
   const lines=[], context=vm.createContext({atob,postMessage:line=>lines.push(line),close(){}});
   vm.runInContext(source,context);
@@ -72,5 +79,27 @@ test('completed ponder search defers bestmove until ponderhit and keeps exact ou
   assert.ok(!e.lines.some(s=>s.startsWith('bestmove')));
   waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('ponderhit'); await waiting;
   assert.deepEqual(scoreLines(e.lines),fixture('start-depth5.json')[0].output);
+  e.send('quit');
+});
+test('real movetime and a ponderhit during clock search finish promptly',async t=>{
+  const e=interactive(t);
+  let waiting=e.wait(line=>line==='readyok'); e.send('isready'); await waiting;
+  let started=Date.now(); waiting=e.wait(line=>line.startsWith('bestmove '));
+  e.send('position startpos'); e.send('go movetime 30'); await waiting;
+  assert.ok(Date.now()-started<2000);
+  waiting=e.wait(line=>line.startsWith('info depth 5 ')); e.send('go ponder wtime 100 btime 100'); await waiting;
+  started=Date.now(); waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('ponderhit'); await waiting;
+  assert.ok(Date.now()-started<2000); e.send('quit');
+});
+test('a new go replaces infinite or sleeping ponder search without dropping its bestmove',async t=>{
+  const e=interactive(t);
+  let waiting=e.wait(line=>line.startsWith('info depth 8 ')); e.send('position startpos'); e.send('go infinite'); await waiting;
+  waiting=e.wait(line=>line.startsWith('bestmove ') && e.lines.filter(s=>s.startsWith('bestmove')).length>=2);
+  e.send('position startpos moves e2e4'); e.send('go depth 5'); await waiting;
+  waiting=e.wait(line=>line.startsWith('info depth 5 ')); e.send('go ponder depth 5'); await waiting;
+  waiting=e.wait(line=>line==='readyok'); e.send('isready'); await waiting;
+  const before=e.lines.filter(s=>s.startsWith('bestmove')).length;
+  waiting=e.wait(line=>line.startsWith('bestmove ') && e.lines.filter(s=>s.startsWith('bestmove')).length>=before+2); e.send('go depth 5'); await waiting;
+  assert.equal(e.lines.filter(s=>s.startsWith('bestmove')).length,before+2);
   e.send('quit');
 });

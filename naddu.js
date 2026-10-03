@@ -2961,7 +2961,10 @@ class EngineUCI {
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
-    if (this.appliedHash!==EngineOptions.Hash) { this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash); }
+    if (this.appliedHash!==EngineOptions.Hash) {
+      if (Threads.sleeping) finish_reporting();
+      this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash);
+    }
   }
   setoption(command) {
     const match = /^setoption\s+name\s+(.+?)(?:\s+value\s+(.*))?$/i.exec(command);
@@ -2973,6 +2976,7 @@ class EngineUCI {
     else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) EngineOptions[name]=Number(value);
   }
   go(command) {
+    if (Threads.sleeping) finish_reporting();
     this.process_settings(); Limits.reset(); Limits.startTime=now();
     const tokens=command.split(' '); let ponder=false;
     for (let i=1;i<tokens.length;i++) {
@@ -3084,6 +3088,10 @@ function create_receiver(send,output,shutdown,signal) {
     command=canonical_command(command); if (!command || quitting) return;
     const token=command.split(' ')[0];
     if (token==='stop' || token==='quit') Atomics.store(signal,0,1);
+    if (token==='go' && active && /^go\b/.test(active)
+      && (/\b(infinite|ponder)\b/.test(active) || !/\b(depth|nodes|movetime|wtime|btime)\b/.test(active))) Atomics.store(signal,0,1);
+    if (token==='isready' && active && /^go\b/.test(active)
+      && queue.some(s=>/^setoption name Hash\b/i.test(s))) Atomics.store(signal,0,1);
     if (token==='ponderhit') Atomics.store(signal,1,1);
     // With no pending setting changes, UCI readiness does not wait for search.
     if (token==='isready' && active && /^go\b/.test(active) && !queue.length) { output('readyok'); return; }
