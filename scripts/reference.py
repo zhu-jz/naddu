@@ -72,7 +72,7 @@ def run_searches(commands, depth):
         worker = Threads.workers[0].pos
         # Sample the move counter at the same point as the completed info line.
         lines = [normalized(s) for s in output.getvalue().splitlines()
-                 if s.startswith("info depth") or s.startswith("bestmove")]
+                 if (s.startswith("info depth") and " score " in s) or s.startswith("bestmove")]
         results.append({"command": command, "depth": worker.completedDepth,
                         "score": worker.rootMoves.move[0].score,
                         "nodes_after_reporting": worker.nodes, "output": lines})
@@ -419,7 +419,7 @@ def mainsearch_fixtures():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -446,6 +446,14 @@ def main():
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
+            elif args.mode == "lifecycle":
+                commands = ["ucinewgame","position startpos","position startpos","ucinewgame","position startpos",
+                    "position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6",
+                    "setoption name MultiPV value 3","position startpos","position startpos",
+                    "ucinewgame","position startpos","setoption name MultiPV value 1",
+                    "position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 100 1",
+                    "position fen 7k/5K2/6Q1/8/8/8/8/8 b - - 0 1"]
+                result = {"commands": commands,"results":run_searches(commands,args.depth)}
             else:
                 commands = json.load(sys.stdin)
                 result = run_searches(commands, args.depth)

@@ -13,7 +13,7 @@ import {PIECE_TO_HISTORY_GRAIN, CounterMovePruneThreshold, history_update,
   non_pawn_correction_history_update, stat_bonus, stat_malus, update_continuation_histories,
   update_quiet_histories, clear_histories} from './history.mjs';
 import {tt_probe, tte_save, tte_value, tte_move, tte_eval, tte_depth, tte_is_pv,
-  tte_bound, tt_new_search, tt_clear, value_to_tt, value_from_tt} from './tt.mjs';
+  tte_bound, tt_new_search, tt_clear, tt_hashfull, value_to_tt, value_from_tt} from './tt.mjs';
 import {evaluate} from './evaluate.mjs';
 import {EngineOptions, Limits, Threads, mainThread, emit_output} from './control.mjs';
 import {time_init, time_elapsed, time_optimum, time_maximum} from './timeman.mjs';
@@ -30,6 +30,18 @@ export function init_search_sentinels(pos) {
     const st = pos.stack[i]; st.history = history; st.staticEval = VALUE_NONE; st.checkersBB = 0n;
     st.currentMove = 0; st.moveCount = 0; st.excludedMove = 0; st.ttHit = false;
   }
+}
+export function ensure_search_worker() {
+  if (!Threads.workers.length) {
+    Threads.counterMoveHistory = create_counter_move_history();
+    Threads.workers.push({pos:new Position(true,Threads.counterMoveHistory)});
+  }
+}
+export function search_clear() {
+  tt_clear();
+  if (Threads.counterMoveHistory) clear_counter_move_history(Threads.counterMoveHistory);
+  for (const worker of Threads.workers) clear_histories(worker.pos);
+  mainThread.previousScore = VALUE_INFINITE; mainThread.bestPreviousAverageScore = VALUE_INFINITE; mainThread.previousTimeReduction = 1;
 }
 export function search_init() { for (let i = 1; i < MAX_MOVES; i++) Reductions[i] = Math.trunc(21.14*Math.log(i)); }
 export function futility_margin(d,improving,opponentWorsening) {
@@ -334,5 +346,127 @@ export function search_node(pos,alpha,beta,depth,cutNode,NT) {
     non_pawn_correction_history_update(pos.nonPawnCorrectionHistory,BLACK,pos.sideToMove,pos,bonus);
   }
   return bestValue;
+}
+export function stable_sort(moves,num,start = 0) {
+  const sorted = moves.slice(start,start+num).sort((a,b)=>(b.score-a.score) || (b.previousScore-a.previousScore));
+  for (let i = 0; i < sorted.length; i++) moves[start+i] = sorted[i];
+}
+export function thread_search(pos) {
+  let bestValue = -VALUE_INFINITE, alpha = -VALUE_INFINITE, delta = -VALUE_INFINITE, beta = VALUE_INFINITE;
+  pos.completedDepth = 0; const rm = pos.rootMoves;
+  let searchAgainCounter = 0, lastBestMove = 0, lastBestMoveDepth = 0, totalChanges = 0, timeReduction = 1, iterIdx = 0;
+  if (pos.threadIdx===0) mainThread.iterValue = Array(4).fill(mainThread.previousScore===VALUE_INFINITE ? 0 : mainThread.previousScore);
+  pos.rootDepth = 0; pos.st.ply = 0;
+  for (const killers of pos.killers) killers[0] = killers[1] = 0;
+  for (const values of [pos.cutoffCnt,pos.statScore,pos.doubleExtensions]) values.fill(0);
+  pos.ttPv.fill(false);
+  for (let i = pos.st_idx; i < pos.st_idx+3; i++) {
+    const st = pos.stack[i]; st.currentMove = st.excludedMove = st.moveCount = 0; st.ttHit = false; st.staticEval = 0; st.history = null;
+  }
+  init_search_sentinels(pos);
+  while (true) {
+    pos.rootDepth++;
+    if (!(pos.rootDepth<MAX_PLY && !Threads.stop && !(Limits.depth && pos.threadIdx===0 && pos.rootDepth>Limits.depth))) break;
+    totalChanges /= 2;
+    for (let i = 0; i < rm.size; i++) rm.move[i].previousScore = rm.move[i].score;
+    if (!Threads.increaseDepth) searchAgainCounter++;
+    const pvLast = rm.size; pos.pvLast = pvLast;
+    for (let pvIdx = 0; pvIdx < pos.multiPV; pvIdx++) {
+      if (Threads.stop) break; pos.pvIdx = pvIdx; pos.selDepth = 0;
+      const previousScore = rm.move[pvIdx].averageScore;
+      delta = 19+Math.floor(previousScore*previousScore/16023);
+      alpha = Math.max(previousScore-delta,-VALUE_INFINITE); beta = Math.min(previousScore+delta,VALUE_INFINITE);
+      const us = pos.sideToMove; pos.optimism[us] = c_div(137*previousScore,Math.abs(previousScore)+185); pos.optimism[1-us] = -pos.optimism[us] || 0;
+      let failedHigh = 0;
+      while (true) {
+        const adjustedDepth = Math.max(1,pos.rootDepth-failedHigh-Math.floor(3*(searchAgainCounter+1)/4));
+        bestValue = search_node(pos,alpha,beta,adjustedDepth,false,PV); stable_sort(rm.move,pvLast-pvIdx,pvIdx);
+        if (Threads.stop) break;
+        if (bestValue<=alpha) {
+          beta = c_div(alpha+beta,2); alpha = Math.max(bestValue-delta,-VALUE_INFINITE); failedHigh = 0;
+          if (pos.threadIdx===0) Threads.stopOnPonderhit = false;
+        } else if (bestValue>=beta) { beta = Math.min(bestValue+delta,VALUE_INFINITE); failedHigh++; }
+        else break;
+        delta += Math.floor(delta/4)+2;
+      }
+      stable_sort(rm.move,pvIdx+1);
+      if (pos.threadIdx===0 && (Threads.stop || pvIdx+1===pos.multiPV || time_elapsed()>3000)) uci_print_pv(pos,pos.rootDepth,alpha,beta);
+    }
+    bestValue = rm.move[0].score; if (!Threads.stop) pos.completedDepth = pos.rootDepth;
+    if (rm.move[0].pv[0]!==lastBestMove) { lastBestMove = rm.move[0].pv[0]; lastBestMoveDepth = pos.rootDepth; }
+    if (pos.threadIdx!==0) continue;
+    for (const worker of Threads.workers) { totalChanges += worker.pos.bestMoveChanges; worker.pos.bestMoveChanges = 0; }
+    if (use_time_management() && !Threads.stop && !Threads.stopOnPonderhit) {
+      const diff = mainThread.bestPreviousAverageScore===VALUE_INFINITE ? 0 : mainThread.bestPreviousAverageScore-bestValue;
+      const fallingEval = clamp((62.398+12.169*diff+6.071*(mainThread.iterValue[iterIdx]-bestValue))/616.60,0.539,1.577);
+      timeReduction = lastBestMoveDepth+8<pos.completedDepth ? 1.723 : 0.914;
+      const reduceTime = (1.4586+mainThread.previousTimeReduction)/(1.8897*timeReduction);
+      const instability = 1.0828+1.7293*totalChanges/Math.max(1,Threads.numThreads);
+      let totalTime = time_optimum()*fallingEval*reduceTime*instability; if (rm.size===1) totalTime = Math.min(500,totalTime);
+      if (time_elapsed()>totalTime) { if (Threads.ponder) Threads.stopOnPonderhit = true; else Threads.request_stop(); }
+      else if (!Threads.ponder && time_elapsed()>totalTime*0.4615) Threads.increaseDepth = false;
+      else Threads.increaseDepth = true;
+    }
+    mainThread.iterValue[iterIdx] = bestValue; iterIdx = (iterIdx+1)&3;
+  }
+  if (pos.threadIdx===0) mainThread.previousTimeReduction = timeReduction;
+}
+export function extract_ponder_from_tt(rm,pos) {
+  if (!rm.pv[0]) return false;
+  do_move(pos,rm.pv[0],gives_check(pos,pos.st,rm.pv[0]));
+  const st = pos.st, key = st.rule50<14 ? st.key : st.key ^ make_key(Math.floor((st.rule50-14)/8));
+  const [hit,tte] = tt_probe(key);
+  if (hit) {
+    const m = tte_move(tte);
+    for (const ext of generate_legal(pos)) if (ext.move===m) { if (rm.pvSize<rm.pv.length) rm.pv[rm.pvSize++] = m; break; }
+  }
+  undo_move(pos,rm.pv[0]); return rm.pvSize>1;
+}
+export function mainthread_search() {
+  const pos = Threads.workers[0].pos; time_init(pos.sideToMove,pos.gamePly,Limits); tt_new_search();
+  if (pos.rootMoves.size>0) {
+    for (const worker of Threads.workers) worker.pos.bestMoveChanges = 0;
+    thread_search(pos);
+  }
+  // UCI controllers defer bestmove for infinite/ponder searches until stop.
+  if (!Threads.stop && (Threads.ponder || Limits.infinite)) { Threads.sleeping = true; return; }
+  finish_reporting();
+}
+export function finish_reporting() {
+  const pos = Threads.workers[0].pos; Threads.sleeping = false; Threads.request_stop();
+  if (pos.rootMoves.size===0) {
+    const rm = pos.rootMoves.move[0]; rm.pv[0] = 0; rm.pvSize = 1; pos.rootMoves.size = 1;
+    emit_output(`info depth 0 score ${uci_value(pos.st.checkersBB ? -VALUE_MATE : VALUE_DRAW)}`);
+  }
+  const rm = pos.rootMoves.move[0]; mainThread.previousScore = rm.score; mainThread.bestPreviousAverageScore = rm.averageScore;
+  let out = `bestmove ${uci_move(rm.pv[0],pos.chess960)}`;
+  if (rm.pvSize>1 || extract_ponder_from_tt(rm,pos)) out += ` ponder ${uci_move(rm.pv[1],pos.chess960)}`;
+  emit_output(out); Threads.searching = false;
+}
+export function start_thinking(root,ponderMode = false) {
+  ensure_search_worker(); Threads.stopOnPonderhit = false; Threads.stop = false; Threads.increaseDepth = true;
+  Threads.ponder = ponderMode; Threads.sleeping = false; Threads.searching = true;
+  const legal = generate_legal(root), pos = Threads.workers[0].pos; pos.copy_root_from(root);
+  pos.multiPV = Math.min(EngineOptions.MultiPV,legal.length);
+  if (!pos.rootMoves) pos.rootMoves = new RootMoves();
+  pos.rootMoves.size = legal.length;
+  for (let i = 0; i < legal.length; i++) pos.rootMoves.move[i].reset_for_search(legal[i].move);
+  init_search_sentinels(pos); mainthread_search();
+}
+export function uci_print_pv(pos,depth,alpha,beta) {
+  const elapsed = time_elapsed()+1, rm = pos.rootMoves, nodes = Threads.nodes_searched();
+  for (let i = 0; i < Math.min(pos.multiPV,rm.size); i++) {
+    const move = rm.move[i], updated = move.score!==-VALUE_INFINITE;
+    if (depth===1 && !updated && i>0) continue;
+    const d = updated ? depth : Math.max(1,depth-1); let value = updated ? move.score : move.previousScore;
+    if (value===-VALUE_INFINITE) value = VALUE_ZERO;
+    let out = `info depth ${d} seldepth ${move.selDepth+1} multipv ${i+1} score ${uci_value(value)}`;
+    if (i===pos.pvIdx && updated) { if (value>=beta) out += ' lowerbound'; else if (value<=alpha) out += ' upperbound'; }
+    out += ` nodes ${nodes} nps ${Math.floor(nodes*1000/elapsed)}`;
+    if (elapsed>1000) out += ` hashfull ${tt_hashfull()}`;
+    out += ` time ${elapsed} pv`;
+    for (let j = 0; j < move.pvSize; j++) { const m = move.pv[j]; if (!m) break; out += ' '+uci_move(m,pos.chess960); }
+    emit_output(out);
+  }
 }
 search_init();
