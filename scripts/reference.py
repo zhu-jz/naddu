@@ -178,9 +178,51 @@ def primitives():
             "cuckoo": list(map(str, cuckoo)), "cuckooMove": cuckooMove, "sliding": sliding}
 
 
+def sequences():
+    from position import Position, do_move, undo_move, gives_check, is_draw, has_game_cycle
+    from movegen import generate_legal
+    from uci import StartFEN, position
+    rng = random.Random(1070372)
+    pos = Position(search_worker=False)
+    pos.set(StartFEN)
+    steps = []
+    for _ in range(200):
+        moves = generate_legal(pos)
+        if not moves:
+            pos.set(StartFEN)
+            steps.append({"reset": True})
+            continue
+        move = rng.choice(moves).move
+        before = state(pos)
+        check = gives_check(pos, pos.st, move)
+        do_move(pos, move, check)
+        after = state(pos)
+        undo_move(pos, move)
+        assert state(pos) == before
+        do_move(pos, move, check)
+        assert state(pos) == after
+        steps.append({"move": move, "check": check, "legal": [m.move for m in moves], "state": after})
+    commands = [
+        "position startpos",
+        "position startpos moves g1f3 g8f6 f3g1 f6g8",
+        "position startpos moves g1f3 g8f6 f3g1 f6g8 g1f3 g8f6 f3g1 f6g8",
+        "position startpos moves e2e4 a7a6 e4e5 d7d5 e5d6 c7d6",
+        "position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 100 1",
+        "position fen 4k3/8/8/8/8/8/4r3/4K3 w - - 100 1",
+        "position fen 4k3/8/8/8/8/8/8/4K3 w - - 100 1",
+    ]
+    roots = []
+    for command in commands:
+        position(pos, command)
+        roots.append({"command": command, "state": state(pos), "hasRepeated": pos.hasRepeated,
+                      "rootKeyFlip": str(pos.rootKeyFlip), "keys": [str(s.key) for s in pos.stack[:pos.st_idx+1]],
+                      "draw": is_draw(pos), "cycles": [has_game_cycle(pos, ply) for ply in (0, 1, 4, 8)]})
+    return {"steps": steps, "roots": roots}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -194,6 +236,8 @@ def main():
                 result = fixtures()
             elif args.mode == "primitives":
                 result = primitives()
+            elif args.mode == "sequences":
+                result = sequences()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
