@@ -327,9 +327,36 @@ def picker_fixtures():
     return {"pickers": result,"sorts": sorts}
 
 
+def qsearch_fixtures():
+    from position import Position
+    from search import qsearch_node
+    from constants import VALUE_NONE
+    import tt
+    fens = [s["fen"] for s in json.loads((ROOT / "tests/fixtures/positions.json").read_text())]
+    cases = []
+    for fen in fens:
+        for depth, nt, alpha, beta, forced_check, warm in [
+            (0,1,-32001,32001,None,False),(-1,1,-32001,32001,None,False),
+            (-5,0,-1,0,None,False),(0,0,100,101,None,False),
+            (0,1,-32001,32001,True,False),(0,0,100,101,None,True)]:
+            tt.tt_allocate(1)
+            pos = Position()
+            pos.set(fen)
+            in_check = bool(pos.st.checkersBB) if forced_check is None else forced_check
+            if warm:
+                qsearch_node(pos,-32001,32001,0,1,bool(pos.st.checkersBB))
+                pos.nodes = 0
+            value = qsearch_node(pos,alpha,beta,depth,nt,in_check)
+            entries = [[i,str(packed)] for i,packed in enumerate(tt.TT.table) if packed]
+            cases.append({"fen":fen,"depth":depth,"nt":nt,"alpha":alpha,"beta":beta,
+                          "forced_check":forced_check,"warm":warm,"value":value,"nodes":pos.nodes,
+                          "pv":pos.pvArray[0],"staticEval":pos.st.staticEval,"tt":entries})
+    return cases
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -349,6 +376,8 @@ def main():
                 result = table_fixtures()
             elif args.mode == "pickers":
                 result = picker_fixtures()
+            elif args.mode == "qsearch":
+                result = qsearch_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
