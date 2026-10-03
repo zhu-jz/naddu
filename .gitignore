@@ -3,3 +3,5 @@ fastchess
 sprt.pgn
 config.json
 *.epd
+build/
+__pycache__/
