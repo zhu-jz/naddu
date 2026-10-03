@@ -4,8 +4,14 @@ export class LimitsType {
   reset() { this.time = [0,0]; this.inc = [0,0]; this.depth = 0; this.movetime = 0; this.nodes = 0; this.infinite = false; this.startTime = 0; }
 }
 export const Limits = new LimitsType();
+let stopSignal = null;
+export function set_stop_signal(signal) { stopSignal = signal; }
 export const Threads = {
-  workers: [], stop: false, ponder: false, stopOnPonderhit: false, increaseDepth: true,
+  workers: [], _stop: false, _ponder: false, stopOnPonderhit: false, increaseDepth: true,
+  get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
+  set stop(value) { this._stop = value; },
+  get ponder() { return this._ponder && !(stopSignal && Atomics.load(stopSignal,1)); },
+  set ponder(value) { this._ponder = value; },
   searching: false, sleeping: false, counterMoveHistory: null,
   get numThreads() { return this.workers.length; },
   nodes_searched() { return this.workers.reduce((sum,w)=>sum+w.pos.nodes,0); },

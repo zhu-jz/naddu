@@ -1,0 +1,46 @@
+<!doctype html><meta charset="utf-8"><title>Naddu Worker parity test</title>
+<pre id="result">Running browser Worker checks…</pre>
+<script>
+(async()=>{
+  const isolated=location.pathname==='/isolated', fixture=await (await fetch('/expected')).json();
+  const worker=new Worker('/naddu.js'), lines=[]; let waiters=[], stage='UCI';
+  worker.onmessage=e=>{
+    if (typeof e.data!=='string') throw new Error('Worker output must be UCI text');
+    lines.push(e.data);
+    for (const w of [...waiters]) if (w.match(e.data)) { clearTimeout(w.timer); waiters=waiters.filter(x=>x!==w); w.resolve(e.data); }
+  };
+  worker.onerror=e=>{ for (const w of waiters) w.reject(new Error(e.message)); };
+  const wait=match=>new Promise((resolve,reject)=>{
+    const w={match,resolve,reject,timer:setTimeout(()=>reject(new Error('Timed out waiting for Worker output')),10000)}; waiters.push(w);
+  });
+  const send=s=>worker.postMessage(s), check=(ok,message)=>{ if (!ok) throw new Error(message); };
+  const scores=()=>lines.filter(s=>(s.startsWith('info depth') && s.includes(' score ')) || s.startsWith('bestmove')).map(s=>s.replace(/ (?:time|nps|hashfull) \d+/g,''));
+  try {
+    check((typeof SharedArrayBuffer==='function')===isolated,'Unexpected cross-origin isolation');
+    let done=wait(s=>s==='uciok'); send('uci'); await done;
+    stage='diagnostics'; done=wait(s=>s.startsWith('nodes ')); send('position startpos'); send('board'); send('eval'); send('perft 3'); await done;
+    check(lines.includes('8  r n b q k b n r '),'Board diagnostics changed'); check(lines.includes('62'),'Static evaluation changed');
+    check(lines.some(s=>/^nodes 8902 /.test(s)),'Perft differs');
+    stage='cold search'; done=wait(s=>s.startsWith('bestmove ')); send('ucinewgame'); send('position startpos'); send('go depth 5'); await done;
+    check(JSON.stringify(scores())===JSON.stringify(fixture[0].output),'Cold search differs');
+    if (isolated) {
+      stage='infinite search'; done=wait(s=>s.startsWith('info depth 8 ')); send('go infinite'); await done;
+      stage='infinite readiness';
+      done=wait(s=>s==='readyok'); send('isready'); await done;
+      stage='stop'; done=wait(s=>s.startsWith('bestmove ')); send('stop'); await done;
+      const previous=lines.filter(s=>s.startsWith('bestmove')).length;
+      stage='ponder search'; done=wait(s=>s.startsWith('info depth 5 ')); send('go ponder depth 5'); await done;
+      done=wait(s=>s==='readyok'); send('isready'); await done;
+      check(lines.filter(s=>s.startsWith('bestmove')).length===previous,'Ponder reported bestmove before hit');
+      stage='ponderhit'; done=wait(s=>s.startsWith('bestmove ')); send('ponderhit'); await done;
+    }
+    worker.terminate();
+    const report={isolated,passed:true,checks:isolated ? ['UCI','diagnostics','perft','exact depth-5 parity','infinite readiness','stop','ponderhit'] : ['UCI','diagnostics','perft','exact depth-5 parity']};
+    document.getElementById('result').textContent=JSON.stringify(report);
+    await fetch('/result',{method:'POST',body:JSON.stringify(report)});
+    if (!isolated) location.href='/isolated';
+  } catch (e) {
+    worker.terminate(); await fetch('/result',{method:'POST',body:JSON.stringify({isolated,passed:false,error:stage+': '+e.stack,lines:lines.slice(-4)})});
+  }
+})();
+</script>

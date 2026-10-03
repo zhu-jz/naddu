@@ -1,14 +1,15 @@
 # Naddu
 
-Naddu is a basic Javascript UCI chess engine.
+Naddu is a JavaScript UCI chess engine. Its single-thread core is a faithful port
+of the supplied `minifish-python` engine, including its embedded NNUE network,
+move ordering, clustered TT, histories, pruning, extensions and reductions.
 
 It can be easily deployed in your web pages.
 
 All you need is `naddu.js` from the repo root.
 
-Strength is around 2500 Elo.
-
-Evaluation and search parameters are configurable; look for `config start` in the source.
+The release has no runtime dependencies or separate network file. Edit the
+modules in `src/` and run `npm run build` to regenerate `naddu.js`.
 
 ## Hello world
 
@@ -47,7 +48,12 @@ Try this example here: https://op12no2.github.io/naddu/examples/hello_world.html
 
 Naddu implements the following [UCI](https://backscattering.de/chess/uci/) commands: `uci`, `uciok`, `isready`, `readyok`, `ucinewgame|u`, `setoption`, `position|p`, `go|g` and `quit|q`.
 
-Note that `quit` will wait for a search to finish because Javascript is single-threaded. To stop a search early, simply kill the worker and create a new one.
+Node uses a persistent search worker and a responsive UCI receiver. `stop`,
+`ponderhit` and `quit` work during search, preserving search state across calls.
+Browser Workers also support these controls on pages with cross-origin isolation
+(`Cross-Origin-Opener-Policy: same-origin` and
+`Cross-Origin-Embedder-Policy: require-corp`). On ordinary pages, a synchronous
+search blocks command reception; interrupt it by terminating the Worker:
 
 ```
 naddu.terminate();
@@ -60,12 +66,12 @@ naddu = new Worker('naddu.js');
 - `moves|m` - list the legal moves, or `checkmate` or `stalemate` if there are none.
 - `eval|e` - static eval of the current position from the side to move's perspective.
 - `perft|f <depth>` - leaf node count.
-- `bench|h` - search 50 positions, report nodes and nps.
+- `bench|h [hash=16] [threads=1] [limit=13] [default|current|fen-file] [depth|time]` - run Python's 47-position benchmark, report nodes and nps. FEN files are supported in Node.
 - `help|?` - list commands.
 
 ## Command line
 
-Naddu can also be started from a command line using `Node` or `Bun`:-
+Start Naddu from a command line with Node:
 
 ```
 node naddu.js
@@ -74,21 +80,35 @@ node naddu.js
 Or give it commands:-
 
 ```
-bun naddu.js uci ucinewgame "position startpos" "go depth 8"
+node naddu.js uci ucinewgame "position startpos" "go depth 8"
+node naddu.js "bench 16 1 13"
 ```
 
-## Creating binaries
+## Reference parity and development
 
-You can create executables using `Bun`:-
+`Threads` is restricted to one search thread. `MultiPV`, `Ponder`, `Hash` and
+`UCI_Chess960` follow the reference options. The supplied reference fixes its TT
+at 28,672 clusters regardless of `Hash`; changing `Hash` still reallocates it.
+Its UCI position parser also hard-codes orthodox castling interpretation even
+when `UCI_Chess960` is set. These behaviors are retained for parity.
+
+Exact comparisons include internal scores, completed depth, selective depth,
+PVs, bestmove/ponder and move counts, with persistent TT/history/root state.
+Elapsed time and NPS depend on the runtime. Real-time searches can stop at
+different nodes; deterministic clock tests verify the time-control logic.
+
+Keep the supplied Python source in `minifish-python/` to regenerate fixtures or
+run live differential checks. Its SHA-256 manifest is pinned; the source is
+never modified by the harness. Set `PYTHON` to your Python executable, or install
+Python through `uv` for the default offline runner.
 
 ```
-bun build naddu.js --compile --minify --target=bun-windows-x64   --outfile=naddu-win-x64
-bun build naddu.js --compile --minify --target=bun-windows-arm64 --outfile=naddu-win-arm64
-bun build naddu.js --compile --minify --target=bun-linux-x64     --outfile=naddu-linux-x64
-bun build naddu.js --compile --minify --target=bun-linux-arm64   --outfile=naddu-linux-arm64
-bun build naddu.js --compile --minify --target=bun-darwin-x64    --outfile=naddu-mac-x64
-bun build naddu.js --compile --minify --target=bun-darwin-arm64  --outfile=naddu-mac-arm64
+npm run build
+npm test
+npm run parity -- 13
+npm run test:browser
 ```
 
-The Linux arm64 binary runs on a Raspberry Pi 3 or later with a 64-bit OS. Add `-musl` to
-the Linux targets for Alpine. 
+The browser check uses an installed Chromium browser (`CHROME` can select its
+executable). See the [port plan](docs/minifish-port-plan.md) for the acceptance
+contract and implementation milestones.

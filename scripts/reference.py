@@ -417,9 +417,60 @@ def mainsearch_fixtures():
     return result
 
 
+def control_fixtures():
+    import timeman, uci
+    from search import Threads, Limits, search_clear, mainThread
+    from position import Position
+    formulas = []
+    for ponder in (False, True):
+        uci.setoption(f"setoption name Ponder value {str(ponder).lower()}")
+        for us, ply, time_left, inc in [(0,0,0,0),(0,0,1,0),(0,1,39,0),(1,25,999,30),
+                (0,0,1000,0),(1,100,60000,1000),(0,200,300000,5000),(1,2,150,10000)]:
+            Limits.reset()
+            Limits.startTime = 12345
+            Limits.time[us] = time_left
+            Limits.inc[us] = inc
+            timeman.time_init(us,ply,Limits)
+            formulas.append({"us":us,"ply":ply,"time":time_left,"inc":inc,"ponder":ponder,
+                    "optimum":timeman.time_optimum(),"maximum":timeman.time_maximum()})
+    uci.setoption("setoption name Ponder value false")
+    search_clear()
+    root = Position(search_worker=False)
+    cases = []
+    specs = [("position startpos","go nodes 1",64),
+        ("position startpos","go nodes 128",64),
+        ("position startpos","go nodes 1000",64),
+        ("position startpos","go depth 6 nodes 500",64),
+        ("position startpos","go movetime 10",32),
+        ("position startpos","go wtime 1000 btime 1000",16),
+        ("position startpos moves e2e4 e7e5 g1f3 b8c6 f1b5 a7a6","go wtime 60000 btime 60000 winc 1000 binc 1000 depth 9",8)]
+    original_time, original_uci_time = timeman.now, uci.now
+    try:
+        for position, command, pace in specs:
+            search_clear()
+            uci.position(root,position)
+            # Anchor each command before copy_root_from() resets worker nodes.
+            Threads.workers[0].pos.nodes = 0
+            timeman.now = uci.now = lambda pace=pace: 10000 + Threads.nodes_searched() // pace
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                uci.go(root,command)
+                Threads.wait_for_search_finished()
+            pos = Threads.workers[0].pos
+            cases.append({"position":position,"command":command,"pace":pace,
+                "depth":pos.completedDepth,"score":pos.rootMoves.move[0].score,"nodes":pos.nodes,
+                "optimum":timeman.time_optimum(),"maximum":timeman.time_maximum(),
+                "previousTimeReduction":mainThread.previousTimeReduction,
+                "output":[normalized(s) for s in output.getvalue().splitlines()
+                    if (s.startswith("info depth") and " score " in s) or s.startswith("bestmove")]})
+    finally:
+        timeman.now, uci.now = original_time, original_uci_time
+    return {"formulas":formulas,"cases":cases}
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -443,6 +494,8 @@ def main():
                 result = qsearch_fixtures()
             elif args.mode == "mainsearch":
                 result = mainsearch_fixtures()
+            elif args.mode == "controls":
+                result = control_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults
                 result = run_searches(["ucinewgame"] + [s if s.startswith("setoption") else "position fen " + s for s in Defaults], args.depth)
