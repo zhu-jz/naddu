@@ -29,6 +29,15 @@ def verify_reference():
         raise RuntimeError("Python reference changed; review and update its manifest explicitly")
 
 
+def apply_time_horizon50():
+    """Apply the requested time-control variant in memory, before search imports it."""
+    import inspect
+    import timeman
+    source = inspect.getsource(timeman.time_init)
+    source = source.replace("mtg = 25", "mtg = 50", 1).replace("0.025", "0.05")
+    exec(compile(source, str(REFERENCE / "timeman.py"), "exec"), vars(timeman))
+
+
 def initialize():
     from nnue import nnue_init
     from uci import options_init, process_delayed_settings
@@ -480,7 +489,7 @@ def network_fixture():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "network", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "network", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "controls50", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -488,6 +497,8 @@ def main():
         result = manifest()
     else:
         verify_reference()
+        if args.mode == "controls50":
+            apply_time_horizon50()
         initialize()
         try:
             if args.mode == "fixtures":
@@ -506,7 +517,7 @@ def main():
                 result = qsearch_fixtures()
             elif args.mode == "mainsearch":
                 result = mainsearch_fixtures()
-            elif args.mode == "controls":
+            elif args.mode in ("controls", "controls50"):
                 result = control_fixtures()
             elif args.mode == "benchmark":
                 from benchmark import Defaults

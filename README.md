@@ -99,6 +99,12 @@ PVs, bestmove/ponder and move counts, with persistent TT/history/root state.
 Elapsed time and NPS depend on the runtime. Real-time searches can stop at
 different nodes; deterministic clock tests verify the time-control logic.
 
+Naddu's time manager uses a 50-move horizon and a `0.05` low-clock factor,
+instead of the reference's 25 moves and `0.025`. The 10 ms overhead and other
+time-management formulas are retained. This is an intentional time-control
+variation; fixed-depth search parity is preserved. The clock tests use the Python
+oracle with these two constants changed in memory (`npm run reference -- controls50`).
+
 Keep the supplied Python source in `minifish-python/` to regenerate fixtures or
 run live differential checks. Its SHA-256 manifest is pinned; the source is
 never modified by the harness. Set `PYTHON` to your Python executable, or install

@@ -2395,8 +2395,8 @@ function set_clock(clock) { engineClock = clock; }
 function now() { return Math.trunc(engineClock()); }
 const Time = {startTime: 0,optimumTime: 0,maximumTime: 0};
 function time_init(us,ply,limits) {
-  const overhead = 10; let mtg = 25;
-  if (limits.time[us]<1000 && limits.time[us]>0 && mtg/limits.time[us]>0.025) mtg = Math.trunc(limits.time[us]*0.025);
+  const overhead = 10; let mtg = 50;
+  if (limits.time[us]<1000 && limits.time[us]>0 && mtg/limits.time[us]>0.05) mtg = Math.trunc(limits.time[us]*0.05);
   Time.startTime = limits.startTime;
   const timeLeft = Math.max(1,limits.time[us]+limits.inc[us]*(mtg-1)-overhead*(2+mtg));
   let extra = 1;
