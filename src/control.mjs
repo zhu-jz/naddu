@@ -5,11 +5,20 @@ export class LimitsType {
 }
 export const Limits = new LimitsType();
 let stopSignal = null;
-export function set_stop_signal(signal) { stopSignal = signal; }
+let externallyResetStop = false;
+export function set_stop_signal(signal,externallyReset = false) { stopSignal = signal; externallyResetStop = externallyReset; }
 export const Threads = {
   workers: [], backend: null, maxThreads: 1, sharedNodes: null, _stop: false, _ponder: false, _stopOnPonderhit: false, _increaseDepth: true,
-  get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
-  set stop(value) { this._stop = value; if (stopSignal) Atomics.store(stopSignal,0,Number(value)); },
+  get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0)
+    || (stopSignal.length>4 && Atomics.load(stopSignal,4)) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
+  set stop(value) {
+    this._stop = value;
+    if (stopSignal && stopSignal.length>4) {
+      // The receiver owns slot 0. Slot 4 stops helpers between internal roots
+      // without erasing an early external stop/quit request.
+      Atomics.store(stopSignal,4,Number(value)); if (!value && !externallyResetStop) Atomics.store(stopSignal,0,0);
+    } else if (stopSignal && (value || !externallyResetStop)) Atomics.store(stopSignal,0,Number(value));
+  },
   get ponder() { return this._ponder && !(stopSignal && Atomics.load(stopSignal,1)); },
   set ponder(value) { this._ponder = value; },
   get stopOnPonderhit() { return stopSignal && stopSignal.length>3 ? !!Atomics.load(stopSignal,3) : this._stopOnPonderhit; },

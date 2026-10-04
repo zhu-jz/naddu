@@ -55,7 +55,7 @@ export function install_entry() {
       parentPort.on('message',message=>{if(handle(message)) parentPort.close();}); return;
     }
     if (!isMainThread && workerData && workerData.nadduSearch) {
-      const signal=new Int32Array(workerData.signal); set_stop_signal(signal);
+      const signal=new Int32Array(workerData.signal); set_stop_signal(signal,true);
       const pool=create_smp_pool((index,descriptor)=>{
         const worker=new Worker(__filename,{workerData:{nadduHelper:descriptor}});
         worker.on('error',error=>{report_smp_helper_error(descriptor,error);parentPort.postMessage({failure:error.stack});});
@@ -70,7 +70,7 @@ export function install_entry() {
       });
       return;
     }
-    const signal=new Int32Array(new SharedArrayBuffer(16));
+    const signal=new Int32Array(new SharedArrayBuffer(20));
     const worker=new Worker(__filename,{workerData:{nadduSearch:true,signal:signal.buffer}});
     const output=line=>process.stdout.write(String(line)+'\n'), error=line=>process.stderr.write(String(line)+'\n');
     let input=null;
@@ -101,7 +101,7 @@ export function install_entry() {
     if (helper) { if(helper(message)) close(); return; }
     // A nested classic worker receives its control buffer before commands.
     if (message && typeof message==='object' && message.nadduSearch) {
-      const signal=new Int32Array(message.signal); set_stop_signal(signal);
+      const signal=new Int32Array(message.signal); set_stop_signal(signal,true);
       pool=create_smp_pool((index,descriptor)=>{
         // Browser child startup needs a live event loop. The receiver creates
         // helpers while this compute worker waits on their shared ready flags.
@@ -120,7 +120,7 @@ export function install_entry() {
     }
     if (!receiver) {
       if (typeof SharedArrayBuffer==='function' && typeof Worker==='function') {
-        const signal=new Int32Array(new SharedArrayBuffer(16)), worker=new Worker(location.href);
+        const signal=new Int32Array(new SharedArrayBuffer(20)), worker=new Worker(location.href);
         const helpers=new Map();
         const shutdown=()=>{for(const helper of helpers.values()) helper.terminate();helpers.clear();worker.terminate();close();};
         receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),shutdown,signal);

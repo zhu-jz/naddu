@@ -187,3 +187,11 @@ test('public SMP benchmark completes all reference positions',()=>{
   assert.equal(result.stdout.split('\n').filter(line=>line.startsWith('bestmove ')).length,47);
   assert.match(result.stderr,/Nodes searched\s*:\s*[1-9]\d*/);
 });
+
+test('an immediate stop/quit or EOF cannot be lost before the compute worker starts',()=>{
+  for (const commands of [['go infinite','stop','quit'],['go infinite']]) {
+    const result=spawnSync(process.execPath,[executable.pathname.replace(/^\/([A-Z]:)/,'$1'),...commands],{encoding:'utf8',timeout:3000});
+    assert.equal(result.status,0,result.error?.message || result.stderr);
+    assert.equal(result.stdout.split('\n').filter(line=>line.startsWith('bestmove ')).length,1);
+  }
+});

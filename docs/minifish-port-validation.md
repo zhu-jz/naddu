@@ -7,8 +7,10 @@ in the implementation sequence recorded below. The supplied Python folder is
 unchanged and retains its original untracked status.
 
 This report records the original port acceptance. Naddu subsequently added a
-configurable TT and the requested 50-move time horizon. Reproduce the fixed-depth
-results with `ReferenceTT=true`; the parity scripts enable it automatically.
+configurable TT, the requested 50-move time horizon and Python-style SMP.
+Reproduce the fixed-depth results with `Threads=1` and `ReferenceTT=true`; the
+parity scripts enable those settings automatically. See the
+[MultiPV/SMP validation](multipv-smp-validation.md) for the subsequent work.
 
 ## Benchmark acceptance
 

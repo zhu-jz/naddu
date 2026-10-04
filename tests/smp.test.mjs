@@ -11,7 +11,7 @@ import {uci_move} from '../src/notation.mjs';
 function setup(t,fail=false) {
   Object.assign(EngineOptions,{Hash:1,ReferenceTT:true,Threads:1,MultiPV:1,Ponder:false,UCI_Chess960:false});
   Threads.workers=[]; Threads.counterMoveHistory=null; Threads.stop=false;
-  const signal=new Int32Array(new SharedArrayBuffer(16)); set_stop_signal(signal);
+  const signal=new Int32Array(new SharedArrayBuffer(20)); set_stop_signal(signal);
   const created=[], output=[];
   const pool=create_smp_pool((index,descriptor)=>{
     const worker=new Worker(new URL('../naddu.js',import.meta.url),{workerData:{nadduHelper:descriptor}});

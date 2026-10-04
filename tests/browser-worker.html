@@ -18,6 +18,11 @@
   try {
     check((typeof SharedArrayBuffer==='function')===isolated,'Unexpected cross-origin isolation');
     let done=wait(s=>s==='uciok'); send('uci'); await done;
+    check(lines.includes('option name Threads type spin default 1 min 1 max '+(isolated ? 16 : 1)),'Unexpected Threads capability');
+    if (!isolated) {
+      send('setoption name Threads value 2'); done=wait(s=>s==='readyok'); send('isready'); await done;
+      check(lines.includes('info string SMP requires worker threads and shared memory'),'Unsupported SMP was not reported');
+    }
     stage='Hash resize'; done=wait(s=>s==='readyok'); send('setoption name Hash value 2'); send('isready'); await done;
     check(lines.includes('info string Hash: 2048 KiB logical, 196608 entries'),'Hash did not resize');
     stage='reference TT'; done=wait(s=>s==='readyok'); send('setoption name ReferenceTT value true'); send('isready'); await done;
@@ -28,6 +33,15 @@
     stage='cold search'; done=wait(s=>s.startsWith('bestmove ')); send('ucinewgame'); send('position startpos'); send('go depth 5'); await done;
     check(JSON.stringify(scores())===JSON.stringify(fixture[0].output),'Cold search differs');
     if (isolated) {
+      stage='SMP setup'; done=wait(s=>s==='readyok'); send('setoption name Threads value 4'); send('setoption name MultiPV value 3'); send('isready'); await done;
+      check(lines.includes('info string Threads: 4'),'SMP pool did not initialize');
+      stage='SMP MultiPV'; let start=lines.length; done=wait(s=>s.startsWith('bestmove ')); send('position startpos'); send('go depth 6'); const best=await done;
+      const pvs=lines.slice(start).filter(s=>s.startsWith('info depth 6 ') && s.includes(' score ')).slice(-3);
+      check(pvs.length===3 && new Set(pvs.map(s=>/ pv (\w+)/.exec(s)[1])).size===3,'SMP MultiPV lines differ');
+      check(best.split(' ')[1]===/ pv (\w+)/.exec(pvs[0])[1],'Fixed-depth SMP selected a helper result');
+      send('setoption name MultiPV value 1');
+      stage='SMP node limit'; done=wait(s=>s.startsWith('bestmove ')); send('go nodes 10000'); await done;
+      stage='SMP movetime'; done=wait(s=>s.startsWith('bestmove ')); send('go movetime 50'); await done;
       stage='infinite search'; done=wait(s=>s.startsWith('info depth 8 ')); send('go infinite'); await done;
       stage='infinite readiness';
       done=wait(s=>s==='readyok'); send('isready'); await done;
@@ -37,9 +51,22 @@
       done=wait(s=>s==='readyok'); send('isready'); await done;
       check(lines.filter(s=>s.startsWith('bestmove')).length===previous,'Ponder reported bestmove before hit');
       stage='ponderhit'; done=wait(s=>s.startsWith('bestmove ')); send('ponderhit'); await done;
+      stage='SMP resize'; done=wait(s=>s==='readyok'); send('setoption name Threads value 2'); send('setoption name Hash value 3'); send('isready'); await done;
+      stage='SMP new game'; done=wait(s=>s.startsWith('bestmove ')); send('ucinewgame'); send('position startpos'); send('go depth 5'); await done;
+      stage='single-thread restore'; done=wait(s=>s==='readyok'); send('setoption name Threads value 1'); send('isready'); await done;
+      stage='early stop during startup';
+      const early=new Worker('/naddu.js');
+      try {
+        await new Promise((resolve,reject)=>{
+          const timer=setTimeout(()=>reject(new Error('Early stop was lost')),10000);
+          early.onmessage=e=>{if(typeof e.data==='string' && e.data.startsWith('bestmove ')) {clearTimeout(timer);resolve();}};
+          early.onerror=e=>{clearTimeout(timer);reject(new Error(e.message));};
+          early.postMessage('go infinite'); early.postMessage('stop');
+        });
+      } finally {early.terminate();}
     }
     worker.terminate();
-    const report={isolated,passed:true,checks:isolated ? ['UCI','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity','infinite readiness','stop','ponderhit'] : ['UCI','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity']};
+    const report={isolated,passed:true,checks:isolated ? ['UCI','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity','4-thread SMP','SMP MultiPV','global node limit','movetime','infinite readiness','stop','ponderhit','SMP resize','new game','single-thread restore','early stop during startup'] : ['UCI','SMP capability limit','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity']};
     document.getElementById('result').textContent=JSON.stringify(report);
     await fetch('/result',{method:'POST',body:JSON.stringify(report)});
     if (!isolated) location.href='/isolated';

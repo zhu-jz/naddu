@@ -18,7 +18,7 @@ const server=http.createServer((req,res)=>{
   if (req.url==='/result') {
     let body=''; req.on('data',data=>body+=data); req.on('end',()=>{
       const report=JSON.parse(body); reports.push(report); res.end('ok');
-      if (!report.passed) reject(new Error(report.error)); else if (reports.length===2) resolve();
+      if (!report.passed) reject(new Error(report.error+'\n'+JSON.stringify({lines:report.lines,requests,diagnostics}))); else if (reports.length===2) resolve();
     }); return;
   }
   if (req.url==='/isolated') {

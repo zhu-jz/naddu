@@ -50,7 +50,7 @@ Try this example here: https://op12no2.github.io/naddu/examples/hello_world.html
 
 Naddu implements the following [UCI](https://backscattering.de/chess/uci/) commands: `uci`, `uciok`, `isready`, `readyok`, `ucinewgame|u`, `setoption`, `position|p`, `go|g` and `quit|q`.
 
-Node uses a persistent search worker and a responsive UCI receiver. `stop`,
+Node uses persistent search workers and a responsive UCI receiver. `stop`,
 `ponderhit` and `quit` work during search, preserving search state across calls.
 Browser Workers also support these controls on pages with cross-origin isolation
 (`Cross-Origin-Opener-Policy: same-origin` and
@@ -91,7 +91,8 @@ node naddu.js "bench 16 1 13"
 `Hash` now controls the TT's logical capacity in MiB (1–256, default 1), with
 three entries per 32-byte cluster. For example, `Hash=32` provides 1,048,576
 clusters and 3,145,728 entries. JavaScript array and `BigInt` overhead means
-actual process memory exceeds the logical capacity. Configure it through UCI:
+actual process memory exceeds the logical capacity with `Threads=1`. SMP uses
+packed shared TT buffers. Configure capacity through UCI:
 
 ```
 setoption name Hash value 32
@@ -112,8 +113,34 @@ node naddu.js "setoption name ReferenceTT value true" "bench 16 1 13"
 See the [TT validation report](docs/hash-capacity-validation.md) for capacity
 tests and depth-13 benchmark measurements at several sizes.
 
-`Threads` is restricted to one search thread. `MultiPV`, `Ponder` and
-`UCI_Chess960` follow the reference options.
+`Threads` supports 1–16 search workers in Node and cross-origin-isolated browser
+Workers (default 1). Naddu uses the Python reference's Lazy SMP: persistent
+workers share the TT and continuation history while keeping their other
+histories, boards and search stacks private. Their move counters contribute to
+the global limits. Helpers are stopped and joined before final reporting;
+fixed-depth and MultiPV searches report the main worker's result, while other
+searches use the reference's completed-depth vote and helper-mate guard.
+
+`MultiPV` supports 1–256 requested lines (default 1), clamped to the number of
+legal root moves. It searches distinct alternatives and emits numbered UCI
+`multipv` lines. For example:
+
+```
+setoption name Threads value 4
+setoption name MultiPV value 3
+setoption name Hash value 32
+isready
+position startpos
+go depth 12
+```
+
+Ordinary browser pages expose `Threads` with a maximum of 1 because shared
+memory is unavailable. Parallel scheduling changes TT interactions and search
+results, so exact cross-runtime comparisons use `Threads=1` and
+`ReferenceTT=true`. See the [MultiPV/SMP validation](docs/multipv-smp-validation.md)
+for the implementation checks and reproduction commands.
+
+`Ponder` and `UCI_Chess960` follow the reference options.
 Its UCI position parser also hard-codes orthodox castling interpretation even
 when `UCI_Chess960` is set. These behaviors are retained for parity.
 

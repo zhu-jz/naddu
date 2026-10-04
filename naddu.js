@@ -2464,11 +2464,20 @@ class LimitsType {
 }
 const Limits = new LimitsType();
 let stopSignal = null;
-function set_stop_signal(signal) { stopSignal = signal; }
+let externallyResetStop = false;
+function set_stop_signal(signal,externallyReset = false) { stopSignal = signal; externallyResetStop = externallyReset; }
 const Threads = {
   workers: [], backend: null, maxThreads: 1, sharedNodes: null, _stop: false, _ponder: false, _stopOnPonderhit: false, _increaseDepth: true,
-  get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
-  set stop(value) { this._stop = value; if (stopSignal) Atomics.store(stopSignal,0,Number(value)); },
+  get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0)
+    || (stopSignal.length>4 && Atomics.load(stopSignal,4)) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
+  set stop(value) {
+    this._stop = value;
+    if (stopSignal && stopSignal.length>4) {
+      // The receiver owns slot 0. Slot 4 stops helpers between internal roots
+      // without erasing an early external stop/quit request.
+      Atomics.store(stopSignal,4,Number(value)); if (!value && !externallyResetStop) Atomics.store(stopSignal,0,0);
+    } else if (stopSignal && (value || !externallyResetStop)) Atomics.store(stopSignal,0,Number(value));
+  },
   get ponder() { return this._ponder && !(stopSignal && Atomics.load(stopSignal,1)); },
   set ponder(value) { this._ponder = value; },
   get stopOnPonderhit() { return stopSignal && stopSignal.length>3 ? !!Atomics.load(stopSignal,3) : this._stopOnPonderhit; },
@@ -3079,6 +3088,7 @@ function smp_wait(shared,index,wanted) {
   const deadline=Date.now()+10000, slot=index*SMP_STRIDE;
   while(Atomics.load(shared.stats,slot)!==wanted) {
     const status=Atomics.load(shared.stats,slot);
+    if(status===wanted) break;
     if(status===-1) {
       let message=''; for(let i=index*SMP_ERROR_SIZE;i<(index+1)*SMP_ERROR_SIZE && shared.errors[i];i++) message+=String.fromCharCode(shared.errors[i]);
       throw new Error(`SMP worker ${index} failed: ${message}`);
@@ -3172,7 +3182,7 @@ function create_smp_pool(factory,signal) {
 function install_smp_helper(descriptor) {
   const index=descriptor.index, shared={signal:new Int32Array(descriptor.signal),stats:new Int32Array(descriptor.stats),
     nodes:new BigUint64Array(descriptor.nodes),results:new Int32Array(descriptor.results),errors:new Uint16Array(descriptor.errors)};
-  set_stop_signal(shared.signal); set_output(()=>{});
+  set_stop_signal(shared.signal,true); set_output(()=>{});
   let pos;
   try {
     const history=create_counter_move_history(descriptor.history); pos=new Position(true,history); pos.threadIdx=index;
@@ -3423,7 +3433,7 @@ function install_entry() {
       parentPort.on('message',message=>{if(handle(message)) parentPort.close();}); return;
     }
     if (!isMainThread && workerData && workerData.nadduSearch) {
-      const signal=new Int32Array(workerData.signal); set_stop_signal(signal);
+      const signal=new Int32Array(workerData.signal); set_stop_signal(signal,true);
       const pool=create_smp_pool((index,descriptor)=>{
         const worker=new Worker(__filename,{workerData:{nadduHelper:descriptor}});
         worker.on('error',error=>{report_smp_helper_error(descriptor,error);parentPort.postMessage({failure:error.stack});});
@@ -3438,7 +3448,7 @@ function install_entry() {
       });
       return;
     }
-    const signal=new Int32Array(new SharedArrayBuffer(16));
+    const signal=new Int32Array(new SharedArrayBuffer(20));
     const worker=new Worker(__filename,{workerData:{nadduSearch:true,signal:signal.buffer}});
     const output=line=>process.stdout.write(String(line)+'\n'), error=line=>process.stderr.write(String(line)+'\n');
     let input=null;
@@ -3469,7 +3479,7 @@ function install_entry() {
     if (helper) { if(helper(message)) close(); return; }
     // A nested classic worker receives its control buffer before commands.
     if (message && typeof message==='object' && message.nadduSearch) {
-      const signal=new Int32Array(message.signal); set_stop_signal(signal);
+      const signal=new Int32Array(message.signal); set_stop_signal(signal,true);
       pool=create_smp_pool((index,descriptor)=>{
         // Browser child startup needs a live event loop. The receiver creates
         // helpers while this compute worker waits on their shared ready flags.
@@ -3488,7 +3498,7 @@ function install_entry() {
     }
     if (!receiver) {
       if (typeof SharedArrayBuffer==='function' && typeof Worker==='function') {
-        const signal=new Int32Array(new SharedArrayBuffer(16)), worker=new Worker(location.href);
+        const signal=new Int32Array(new SharedArrayBuffer(20)), worker=new Worker(location.href);
         const helpers=new Map();
         const shutdown=()=>{for(const helper of helpers.values()) helper.terminate();helpers.clear();worker.terminate();close();};
         receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),shutdown,signal);

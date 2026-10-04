@@ -28,6 +28,7 @@ function smp_wait(shared,index,wanted) {
   const deadline=Date.now()+10000, slot=index*SMP_STRIDE;
   while(Atomics.load(shared.stats,slot)!==wanted) {
     const status=Atomics.load(shared.stats,slot);
+    if(status===wanted) break;
     if(status===-1) {
       let message=''; for(let i=index*SMP_ERROR_SIZE;i<(index+1)*SMP_ERROR_SIZE && shared.errors[i];i++) message+=String.fromCharCode(shared.errors[i]);
       throw new Error(`SMP worker ${index} failed: ${message}`);
@@ -121,7 +122,7 @@ export function create_smp_pool(factory,signal) {
 export function install_smp_helper(descriptor) {
   const index=descriptor.index, shared={signal:new Int32Array(descriptor.signal),stats:new Int32Array(descriptor.stats),
     nodes:new BigUint64Array(descriptor.nodes),results:new Int32Array(descriptor.results),errors:new Uint16Array(descriptor.errors)};
-  set_stop_signal(shared.signal); set_output(()=>{});
+  set_stop_signal(shared.signal,true); set_output(()=>{});
   let pos;
   try {
     const history=create_counter_move_history(descriptor.history); pos=new Position(true,history); pos.threadIdx=index;

@@ -9,6 +9,8 @@ original lookup, replacement, aging and packed-field rules.
 capacity (28,672 clusters / 86,016 entries), regardless of `Hash`. This option
 defaults to false. The parity tools enable it explicitly. JavaScript array and
 `BigInt` overhead means actual process memory exceeds the logical capacity.
+These measurements use one search thread. The later SMP implementation uses
+packed shared TT buffers; see [MultiPV/SMP validation](multipv-smp-validation.md).
 
 ## Verification
 
