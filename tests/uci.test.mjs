@@ -31,6 +31,14 @@ test('public UCI preserves warm searches, new games, options and MultiPV',()=>{
   assert.equal(result.status,0,result.stderr);
   assert.deepEqual(scoreLines(result.stdout.trim().split(/\r?\n/)),expected.results.flatMap(r=>r.output));
 });
+
+test('public MultiPV covers warm roots, all legal moves, clamping and option changes',()=>{
+  const expected=fixture('multipv-depth4.json');
+  const commands=expected.commands.flatMap(command=>command.startsWith('position') ? [command,'go depth 4'] : [command]);
+  const result=spawnSync(process.execPath,[executable.pathname.replace(/^\/([A-Z]:)/,'$1'),referenceTT,...commands],{encoding:'utf8',timeout:15000});
+  assert.equal(result.status,0,result.stderr);
+  assert.deepEqual(scoreLines(result.stdout.trim().split(/\r?\n/)),expected.results.flatMap(r=>r.output));
+});
 test('released classic Worker preserves diagnostics, aliases, perft and root search',()=>{
   const lines=[], context=vm.createContext({atob,postMessage:line=>lines.push(line),close(){}});
   vm.runInContext(source,context);

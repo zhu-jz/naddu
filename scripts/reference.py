@@ -487,9 +487,56 @@ def network_fixture():
     return {"integers":len(integers),"bytes":len(packed),"sha256":hashlib.sha256(packed).hexdigest()}
 
 
+def multipv_fixtures():
+    commands = ["ucinewgame", "setoption name MultiPV value 5", "position startpos",
+        "position startpos", "setoption name MultiPV value 256", "position startpos",
+        "position fen 7k/8/6K1/8/8/8/8/8 b - - 0 1",
+        "setoption name MultiPV value 2", "position startpos moves e2e4 e7e5 g1f3",
+        "ucinewgame", "position startpos", "setoption name MultiPV value 1", "position startpos",
+        "setoption name MultiPV value 256", "position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 0 1",
+        "position fen 7k/5K2/6Q1/8/8/8/8/8 b - - 0 1"]
+    return {"commands":commands,"results":run_searches(commands,4)}
+
+
+def selection_fixtures():
+    from types import SimpleNamespace
+    from search import Threads, Limits, select_best_thread
+    from constants import VALUE_INFINITE, VALUE_TB_WIN_IN_MAX_PLY
+    rng = random.Random(734)
+    specs = [
+        {"positions":[[30,10,1],[25,20,2],[20,20,2]]},
+        {"positions":[[30,10,1],[VALUE_TB_WIN_IN_MAX_PLY,20,2]]},
+        {"positions":[[VALUE_TB_WIN_IN_MAX_PLY,10,1],[VALUE_TB_WIN_IN_MAX_PLY+2,8,2]]},
+        {"positions":[[-VALUE_INFINITE,0,1],[10,8,2]]},
+        {"positions":[[20,0,1],[30,0,2]]},
+        {"positions":[[20,4,0],[30,8,2]]},
+        {"positions":[[30,10,1],[25,20,2]],"multiPV":3},
+        {"positions":[[30,10,1],[25,20,2]],"limitDepth":10},
+    ]
+    scores = [-VALUE_INFINITE,-VALUE_TB_WIN_IN_MAX_PLY-1,-VALUE_TB_WIN_IN_MAX_PLY,-100,0,100,
+              VALUE_TB_WIN_IN_MAX_PLY-1,VALUE_TB_WIN_IN_MAX_PLY,VALUE_TB_WIN_IN_MAX_PLY+1]
+    for _ in range(64):
+        specs.append({"positions":[[rng.choice(scores),rng.randrange(0,16),rng.randrange(1,5)]
+                      for _ in range(rng.randrange(1,9))]})
+    original_workers = Threads.workers
+    try:
+        for spec in specs:
+            Limits.reset()
+            Limits.depth = spec.get("limitDepth",0)
+            positions = [SimpleNamespace(completedDepth=d,multiPV=spec.get("multiPV",1),
+                rootMoves=SimpleNamespace(size=1,move=[SimpleNamespace(score=s,pv=[m])]))
+                for s,d,m in spec["positions"]]
+            Threads.workers = [SimpleNamespace(pos=pos) for pos in positions]
+            spec["selected"] = positions.index(select_best_thread(positions[0]))
+    finally:
+        Threads.workers = original_workers
+        Limits.reset()
+    return specs
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("manifest", "fixtures", "network", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "controls", "controls50", "search", "benchmark"))
+    parser.add_argument("mode", choices=("manifest", "fixtures", "network", "primitives", "sequences", "tables", "pickers", "qsearch", "mainsearch", "lifecycle", "multipv", "selection", "controls", "controls50", "search", "benchmark"))
     parser.add_argument("--depth", type=int, default=5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
@@ -517,6 +564,10 @@ def main():
                 result = qsearch_fixtures()
             elif args.mode == "mainsearch":
                 result = mainsearch_fixtures()
+            elif args.mode == "multipv":
+                result = multipv_fixtures()
+            elif args.mode == "selection":
+                result = selection_fixtures()
             elif args.mode in ("controls", "controls50"):
                 result = control_fixtures()
             elif args.mode == "benchmark":

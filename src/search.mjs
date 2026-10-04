@@ -432,13 +432,38 @@ export function mainthread_search() {
   if (!Threads.stop && (Threads.ponder || Limits.infinite)) { Threads.sleeping = true; return; }
   finish_reporting();
 }
+export function select_best_thread(mainPos) {
+  if (mainPos.multiPV>1 || Threads.numThreads===1 || Limits.depth || !mainPos.rootMoves.move[0].pv[0]) return mainPos;
+  let candidates = Threads.workers.map(worker=>worker.pos).filter(pos=>pos.completedDepth>0
+    && pos.rootMoves && pos.rootMoves.size>0 && pos.rootMoves.move[0].score!==-VALUE_INFINITE);
+  if (!candidates.length) return mainPos;
+  if (Math.abs(mainPos.rootMoves.move[0].score)<VALUE_TB_WIN_IN_MAX_PLY) {
+    candidates = candidates.filter(pos=>Math.abs(pos.rootMoves.move[0].score)<VALUE_TB_WIN_IN_MAX_PLY);
+    if (!candidates.length) return mainPos;
+  }
+  const minScore = Math.min(...candidates.map(pos=>pos.rootMoves.move[0].score)), votes = new Map();
+  for (const pos of candidates) {
+    const rm = pos.rootMoves.move[0];
+    votes.set(rm.pv[0],(votes.get(rm.pv[0]) || 0)+(rm.score-minScore+14)*pos.completedDepth);
+  }
+  let best = candidates.includes(mainPos) ? mainPos : candidates[0], bestVote = votes.get(best.rootMoves.move[0].pv[0]) || 0;
+  for (const pos of candidates) {
+    const score = pos.rootMoves.move[0].score, bestScore = best.rootMoves.move[0].score, vote = votes.get(pos.rootMoves.move[0].pv[0]);
+    if (Math.abs(bestScore)>=VALUE_TB_WIN_IN_MAX_PLY ? score>bestScore : score>=VALUE_TB_WIN_IN_MAX_PLY || (score>VALUE_TB_LOSS_IN_MAX_PLY && vote>bestVote)) {
+      best = pos; bestVote = vote;
+    }
+  }
+  return best;
+}
 export function finish_reporting() {
   const pos = Threads.workers[0].pos; Threads.sleeping = false; Threads.request_stop();
   if (pos.rootMoves.size===0) {
     const rm = pos.rootMoves.move[0]; rm.pv[0] = 0; rm.pvSize = 1; pos.rootMoves.size = 1;
     emit_output(`info depth 0 score ${uci_value(pos.st.checkersBB ? -VALUE_MATE : VALUE_DRAW)}`);
   }
-  const rm = pos.rootMoves.move[0]; mainThread.previousScore = rm.score; mainThread.bestPreviousAverageScore = rm.averageScore;
+  const bestPos = select_best_thread(pos);
+  if (bestPos!==pos) uci_print_pv(bestPos,bestPos.completedDepth,-VALUE_INFINITE,VALUE_INFINITE);
+  const rm = bestPos.rootMoves.move[0]; mainThread.previousScore = rm.score; mainThread.bestPreviousAverageScore = rm.averageScore;
   let out = `bestmove ${uci_move(rm.pv[0],pos.chess960)}`;
   if (rm.pvSize>1 || extract_ponder_from_tt(rm,pos)) out += ` ponder ${uci_move(rm.pv[1],pos.chess960)}`;
   emit_output(out); Threads.searching = false;
