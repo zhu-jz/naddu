@@ -15,7 +15,7 @@ export const UCI_OPTIONS = [
   ['Ponder','check',false], ['MultiPV','spin',1,1,256], ['UCI_Chess960','check',false]
 ];
 export function uci_identify(output) {
-  output('id name Naddu Minifish'); output('id author Naddu / Minifish');
+  output('id name Naddu 1'); output('id author Colin Jenkins and Claude');
   for (const [name,type,value,min,max] of UCI_OPTIONS)
     output(`option name ${name} type ${type} default ${value}`+(type==='spin' ? ` min ${min} max ${max}` : ''));
   output('uciok');

@@ -1,8 +1,10 @@
 # Naddu
 
-Naddu is a JavaScript UCI chess engine. Its single-thread core is a faithful port
-of the supplied `minifish-python` engine, including its embedded NNUE network,
-move ordering, clustered TT, histories, pruning, extensions and reductions.
+Naddu is a JavaScript UCI chess engine that replicates
+[Minifish](https://github.com/linrock/minifish) by linrock. Its single-thread core
+is a faithful port of the supplied `minifish-python` reference, including its
+embedded NNUE network, move ordering, clustered TT, histories, pruning,
+extensions and reductions.
 
 It can be easily deployed in your web pages.
 
