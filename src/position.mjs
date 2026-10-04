@@ -75,9 +75,10 @@ export class Stack {
     this.moveCount = 0; this.staticEval = VALUE_NONE; this.ttHit = false;
   }
 }
-export function create_counter_move_history() {
-  const history = Array.from({length: 16}, () => Array.from({length: 64}, () => new Int8Array(1024)));
-  history[0][0].fill(-1);
+export function create_counter_move_history(buffer = null,initialize = buffer===null) {
+  const history = Array.from({length: 16}, (_,pc) => Array.from({length: 64}, (_,square) =>
+    buffer ? new Int8Array(buffer,(pc*64+square)*1024,1024) : new Int8Array(1024)));
+  if (initialize) { for (const piece of history) for (const row of piece) row.fill(0); history[0][0].fill(-1); }
   return history;
 }
 export function clear_counter_move_history(history) {
