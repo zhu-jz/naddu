@@ -18,6 +18,10 @@
   try {
     check((typeof SharedArrayBuffer==='function')===isolated,'Unexpected cross-origin isolation');
     let done=wait(s=>s==='uciok'); send('uci'); await done;
+    stage='Hash resize'; done=wait(s=>s==='readyok'); send('setoption name Hash value 2'); send('isready'); await done;
+    check(lines.includes('info string Hash: 2048 KiB logical, 196608 entries'),'Hash did not resize');
+    stage='reference TT'; done=wait(s=>s==='readyok'); send('setoption name ReferenceTT value true'); send('isready'); await done;
+    check(lines.includes('info string Hash: 896 KiB logical, 86016 entries'),'Reference TT capacity differs');
     stage='diagnostics'; done=wait(s=>s.startsWith('nodes ')); send('position startpos'); send('board'); send('eval'); send('perft 3'); await done;
     check(lines.includes('8  r n b q k b n r '),'Board diagnostics changed'); check(lines.includes('62'),'Static evaluation changed');
     check(lines.some(s=>/^nodes 8902 /.test(s)),'Perft differs');
@@ -35,7 +39,7 @@
       stage='ponderhit'; done=wait(s=>s.startsWith('bestmove ')); send('ponderhit'); await done;
     }
     worker.terminate();
-    const report={isolated,passed:true,checks:isolated ? ['UCI','diagnostics','perft','exact depth-5 parity','infinite readiness','stop','ponderhit'] : ['UCI','diagnostics','perft','exact depth-5 parity']};
+    const report={isolated,passed:true,checks:isolated ? ['UCI','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity','infinite readiness','stop','ponderhit'] : ['UCI','Hash resize','reference TT','diagnostics','perft','exact depth-5 parity']};
     document.getElementById('result').textContent=JSON.stringify(report);
     await fetch('/result',{method:'POST',body:JSON.stringify(report)});
     if (!isolated) location.href='/isolated';

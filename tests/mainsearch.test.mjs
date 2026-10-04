@@ -28,7 +28,7 @@ function historyDigest(pos) {
 }
 test('main search matches Python values, moves, selective depths, all TT writes and complete histories', () => {
   for (const f of expected) {
-    tt_allocate(1); Limits.reset(); Limits.startTime = now(); time_init(0,0,Limits); Threads.stop = false;
+    tt_allocate(1,true); Limits.reset(); Limits.startTime = now(); time_init(0,0,Limits); Threads.stop = false;
     const root = new Position(false); set_position(root,'position fen '+f.fen);
     const pos = new Position(); pos.copy_root_from(root); pos.rootMoves = new RootMoves();
     const legal = generate_legal(root); pos.rootMoves.size = legal.length;

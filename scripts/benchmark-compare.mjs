@@ -13,8 +13,8 @@ const digest=text=>createHash('sha256').update(text).digest('hex');
 const manifest=JSON.parse(fs.readFileSync(path.join(root,'tests/reference-manifest.json')));
 for (const [name,hash] of Object.entries(manifest)) assert.equal(digest(fs.readFileSync(path.join(root,'minifish-python',name))),hash,name+' changed');
 const runs=[['python',python,[...prefix,'-B',path.join(root,'minifish-python/__main__.py'),command]],
-  ['javascript',process.execPath,[path.join(root,'naddu.js'),command]]];
-const report={depth,positions:expected.length,command,nodes:expected.reduce((sum,r)=>sum+r.nodes_after_reporting,0),
+  ['javascript',process.execPath,[path.join(root,'naddu.js'),'setoption name ReferenceTT value true',command]]];
+const report={depth,positions:expected.length,command,referenceTT:true,nodes:expected.reduce((sum,r)=>sum+r.nodes_after_reporting,0),
   normalized_sha256:digest(JSON.stringify(expected.flatMap(r=>r.output))),
   reference_manifest_sha256:digest(JSON.stringify(manifest)),engine_sha256:digest(fs.readFileSync(path.join(root,'naddu.js'))),runtimes:{}};
 fs.mkdirSync(path.join(root,'build'),{recursive:true});

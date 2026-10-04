@@ -21,7 +21,7 @@ export function create_receiver(send,output,shutdown,signal) {
     if (token==='go' && active && /^go\b/.test(active)
       && (/\b(infinite|ponder)\b/.test(active) || !/\b(depth|nodes|movetime|wtime|btime)\b/.test(active))) Atomics.store(signal,0,1);
     if (token==='isready' && active && /^go\b/.test(active)
-      && queue.some(s=>/^setoption name Hash\b/i.test(s))) Atomics.store(signal,0,1);
+      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT)\b/i.test(s))) Atomics.store(signal,0,1);
     if (token==='ponderhit') Atomics.store(signal,1,1);
     // With no pending setting changes, UCI readiness does not wait for search.
     if (token==='isready' && active && /^go\b/.test(active) && !queue.length) { output('readyok'); return; }

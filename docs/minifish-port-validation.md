@@ -6,13 +6,18 @@ ported NNUE and complete single-thread search. All authored changes are committe
 in the implementation sequence recorded below. The supplied Python folder is
 unchanged and retains its original untracked status.
 
+This report records the original port acceptance. Naddu subsequently added a
+configurable TT and the requested 50-move time horizon. Reproduce the fixed-depth
+results with `ReferenceTT=true`; the parity scripts enable it automatically.
+
 ## Benchmark acceptance
 
-Both actual public entry points were run with their default `bench` command:
+Both actual public entry points were originally run with their default `bench`
+command. The equivalent commands for the current release are:
 
 ```powershell
 & $env:PYTHON -B minifish-python/__main__.py bench
-node naddu.js bench
+node naddu.js "setoption name ReferenceTT value true" bench
 ```
 
 Both matched all 47 benchmark positions at depth 13 and reported **2,526,355
@@ -115,9 +120,11 @@ node scripts/trace.mjs --events
 ```
 
 Real clock deadlines can reach different nodes because the runtimes have
-different speeds. The time-allocation formulas and stopping decisions match
-under injected clocks; actual deadline responsiveness is tested separately.
+different speeds. The current clock tests match the Python oracle with the
+requested 50-move horizon applied in memory; actual deadline responsiveness is
+tested separately.
 Browser interruption requires cross-origin isolation; ordinary pages retain the
 documented terminate/recreate Worker method. Bun was unavailable in this
-environment. Python's fixed TT capacity, orthodox UCI castling interpretation
-and other pinned search quirks are retained as described in the port plan.
+environment. Python's fixed TT capacity is available through `ReferenceTT`.
+Orthodox UCI castling interpretation and other pinned search quirks are retained
+as described in the port plan.

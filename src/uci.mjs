@@ -4,14 +4,14 @@ import {generate_legal} from './movegen.mjs';
 import {lsb} from './bitboard.mjs';
 import {StartFEN, set_position, uci_move, uci_square} from './notation.mjs';
 import {evaluate} from './evaluate.mjs';
-import {tt_allocate} from './tt.mjs';
+import {TT, CLUSTER_BYTES, MAX_HASH_MB, tt_allocate} from './tt.mjs';
 import {EngineOptions, Limits, Threads, set_output} from './control.mjs';
 import {now} from './timeman.mjs';
 import {ensure_search_worker, search_clear, start_thinking, finish_reporting} from './search.mjs';
 import {BENCH_POSITIONS} from './generated/benchmark.mjs';
 
 export const UCI_OPTIONS = [
-  ['Threads','spin',1,1,1], ['Hash','spin',1,1,33554432],
+  ['Threads','spin',1,1,1], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
   ['Ponder','check',false], ['MultiPV','spin',1,1,256], ['UCI_Chess960','check',false]
 ];
 export function uci_identify(output) {
@@ -40,18 +40,25 @@ export function canonical_command(command) {
   }
   return tokens.join(' ');
 }
-// One EngineUCI owns the process-wide reference tables. The transport queues
+// One EngineUCI owns the process-wide search tables. The transport queues
 // commands and uses a shared stop flag while this synchronous search executes.
 export class EngineUCI {
   constructor(output,error = output,readFile = null) {
     this.output = output; this.error = error; this.readFile = readFile;
-    this.appliedHash = 1; tt_allocate(1); ensure_search_worker(); search_clear();
+    this.appliedHash = EngineOptions.Hash; this.appliedReferenceTT = EngineOptions.ReferenceTT;
+    tt_allocate(this.appliedHash,this.appliedReferenceTT); ensure_search_worker(); search_clear();
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
-    if (this.appliedHash!==EngineOptions.Hash) {
+    if (this.appliedHash!==EngineOptions.Hash || this.appliedReferenceTT!==EngineOptions.ReferenceTT) {
       if (Threads.sleeping) finish_reporting();
-      this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash);
+      try { tt_allocate(EngineOptions.Hash,EngineOptions.ReferenceTT); }
+      catch (error) {
+        EngineOptions.Hash=this.appliedHash; EngineOptions.ReferenceTT=this.appliedReferenceTT;
+        this.output('info string Hash allocation failed: '+error.message); return;
+      }
+      this.appliedHash=EngineOptions.Hash; this.appliedReferenceTT=EngineOptions.ReferenceTT;
+      this.output(`info string Hash: ${TT.clusterCount*CLUSTER_BYTES/1024} KiB logical, ${TT.table.length} entries`);
     }
   }
   setoption(command) {
@@ -96,6 +103,7 @@ export class EngineUCI {
     const tokens=command.split(' '), hash=Number(tokens[1]||16), threads=Number(tokens[2]||1), limit=Number(tokens[3]||13);
     const fenFile=tokens[4]||'default', limitType=tokens[5]||'depth';
     if (threads!==1 || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires one thread and a positive integer limit'); return; }
+    if (!Number.isInteger(hash) || hash<1 || hash>MAX_HASH_MB) { this.error(`Benchmark Hash must be between 1 and ${MAX_HASH_MB} MiB`); return; }
     EngineOptions.Hash=hash; this.process_settings(); search_clear(); Limits.reset();
     if (limitType==='time') Limits.movetime=limit; else Limits.depth=limit;
     let fens;

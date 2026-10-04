@@ -8,7 +8,7 @@ import {StartFEN,uci_to_move} from '../src/notation.mjs';
 import {from_sq,to_sq} from '../src/constants.mjs';
 const expected = JSON.parse(fs.readFileSync(new URL('./fixtures/tables.json',import.meta.url)));
 test('clustered TT probes, snapshots, replacements, widths, aging and clears match Python', () => {
-  T.tt_allocate(128); assert.equal(T.TT.clusterCount,28672); assert.equal(T.TT.table.length,86016);
+  T.tt_allocate(128,true); assert.equal(T.TT.clusterCount,28672); assert.equal(T.TT.table.length,86016);
   for (const op of expected.tt) {
     if (op.kind === 'generation') { T.tt_new_search(); assert.equal(T.TT.generation8,op.generation); continue; }
     if (op.kind === 'clear') { T.tt_clear(); assert.equal(T.TT.generation8,op.generation); continue; }

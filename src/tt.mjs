@@ -1,6 +1,7 @@
 import {BOUND_EXACT, DEPTH_OFFSET, VALUE_NONE, VALUE_MATE, VALUE_MATE_IN_MAX_PLY,
   VALUE_MATED_IN_MAX_PLY, VALUE_TB_WIN_IN_MAX_PLY, VALUE_TB_LOSS_IN_MAX_PLY} from './constants.mjs';
 export const CLUSTER_SIZE = 3, CLUSTER_BYTES = 32;
+export const MAX_HASH_MB = 256;
 export const TT = {clusterCount: 0, table: [], generation8: 0};
 export class TTEntry { constructor(slot = -1,packed = 0n) { this.slot = slot; this.packed = packed; } }
 export function i16(x) { return ((Number(x)&65535)^32768)-32768; }
@@ -60,8 +61,14 @@ export function tt_probe(key) {
   }
   return [false,new TTEntry(slot,packed)];
 }
-export function tt_allocate(_mb) { tt_free(); TT.clusterCount = 896*1024/CLUSTER_BYTES; TT.table = Array(TT.clusterCount*CLUSTER_SIZE).fill(0n); TT.generation8 = 0; }
-export function tt_clear() { if (TT.table.length) TT.table = Array(TT.table.length).fill(0n); }
+export function tt_allocate(mb,reference = false) {
+  if (!Number.isInteger(mb) || mb<1 || mb>MAX_HASH_MB) throw new RangeError(`Hash must be between 1 and ${MAX_HASH_MB} MiB`);
+  const clusterCount = Math.floor((reference ? 896*1024 : mb*1024*1024)/CLUSTER_BYTES);
+  // Allocate before publishing so a failed resize leaves the current TT intact.
+  const table = Array(clusterCount*CLUSTER_SIZE).fill(0n);
+  TT.table = table; TT.clusterCount = clusterCount; TT.generation8 = 0;
+}
+export function tt_clear() { TT.table.fill(0n); }
 export function tt_hashfull() {
   if (!TT.clusterCount) return 0;
   const samples = Math.min(Math.floor(1000/CLUSTER_SIZE),TT.clusterCount); let used = 0;

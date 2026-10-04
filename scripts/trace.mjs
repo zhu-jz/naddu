@@ -73,7 +73,7 @@ function traced(name,original) {
 ${['search_node','qsearch_node','tt_probe','tte_save','next_move','mp_init_probcut','do_move','undo_move','do_null_move','undo_null_move','history_update','continuation_history_update','capture_history_update','correction_history_update','non_pawn_correction_history_update'].map(name=>`${name}=traced('${name}',${name});`).join('\n')}
 set_clock(()=>0); ensure_search_worker();
 globalThis.runCase=function(spec) {
-  tt_allocate(1); search_clear(); Limits.reset(); Limits.startTime=0; Threads.stop=false;
+  tt_allocate(1,true); search_clear(); Limits.reset(); Limits.startTime=0; Threads.stop=false;
   const root=new Position(false); set_position(root,'position fen '+spec.fen); let pos,value,output=[];
   set_output(line=>{ if ((line.startsWith('info depth') && line.includes(' score ')) || line.startsWith('bestmove')) output.push(line.replace(/ (?:time|nps|hashfull) \\d+/g,'')); });
   if (spec.type==='root') {

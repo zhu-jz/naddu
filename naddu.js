@@ -2098,6 +2098,7 @@ function set_position(pos,string) {
 
 // ---- tt.mjs ----
 const CLUSTER_SIZE = 3, CLUSTER_BYTES = 32;
+const MAX_HASH_MB = 256;
 const TT = {clusterCount: 0, table: [], generation8: 0};
 class TTEntry { constructor(slot = -1,packed = 0n) { this.slot = slot; this.packed = packed; } }
 function i16(x) { return ((Number(x)&65535)^32768)-32768; }
@@ -2157,8 +2158,14 @@ function tt_probe(key) {
   }
   return [false,new TTEntry(slot,packed)];
 }
-function tt_allocate(_mb) { tt_free(); TT.clusterCount = 896*1024/CLUSTER_BYTES; TT.table = Array(TT.clusterCount*CLUSTER_SIZE).fill(0n); TT.generation8 = 0; }
-function tt_clear() { if (TT.table.length) TT.table = Array(TT.table.length).fill(0n); }
+function tt_allocate(mb,reference = false) {
+  if (!Number.isInteger(mb) || mb<1 || mb>MAX_HASH_MB) throw new RangeError(`Hash must be between 1 and ${MAX_HASH_MB} MiB`);
+  const clusterCount = Math.floor((reference ? 896*1024 : mb*1024*1024)/CLUSTER_BYTES);
+  // Allocate before publishing so a failed resize leaves the current TT intact.
+  const table = Array(clusterCount*CLUSTER_SIZE).fill(0n);
+  TT.table = table; TT.clusterCount = clusterCount; TT.generation8 = 0;
+}
+function tt_clear() { TT.table.fill(0n); }
 function tt_hashfull() {
   if (!TT.clusterCount) return 0;
   const samples = Math.min(Math.floor(1000/CLUSTER_SIZE),TT.clusterCount); let used = 0;
@@ -2365,7 +2372,7 @@ function next_move(pos,skipQuiets) {
 }
 
 // ---- control.mjs ----
-const EngineOptions = {Hash: 1, Threads: 1, Ponder: false, MultiPV: 1, UCI_Chess960: false};
+const EngineOptions = {Hash: 1, ReferenceTT: false, Threads: 1, Ponder: false, MultiPV: 1, UCI_Chess960: false};
 class LimitsType {
   constructor() { this.reset(); }
   reset() { this.time = [0,0]; this.inc = [0,0]; this.depth = 0; this.movetime = 0; this.nodes = 0; this.infinite = false; this.startTime = 0; }
@@ -2923,7 +2930,7 @@ const BENCH_POSITIONS = [
 // ---- uci.mjs ----
 
 const UCI_OPTIONS = [
-  ['Threads','spin',1,1,1], ['Hash','spin',1,1,33554432],
+  ['Threads','spin',1,1,1], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
   ['Ponder','check',false], ['MultiPV','spin',1,1,256], ['UCI_Chess960','check',false]
 ];
 function uci_identify(output) {
@@ -2952,18 +2959,25 @@ function canonical_command(command) {
   }
   return tokens.join(' ');
 }
-// One EngineUCI owns the process-wide reference tables. The transport queues
+// One EngineUCI owns the process-wide search tables. The transport queues
 // commands and uses a shared stop flag while this synchronous search executes.
 class EngineUCI {
   constructor(output,error = output,readFile = null) {
     this.output = output; this.error = error; this.readFile = readFile;
-    this.appliedHash = 1; tt_allocate(1); ensure_search_worker(); search_clear();
+    this.appliedHash = EngineOptions.Hash; this.appliedReferenceTT = EngineOptions.ReferenceTT;
+    tt_allocate(this.appliedHash,this.appliedReferenceTT); ensure_search_worker(); search_clear();
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
-    if (this.appliedHash!==EngineOptions.Hash) {
+    if (this.appliedHash!==EngineOptions.Hash || this.appliedReferenceTT!==EngineOptions.ReferenceTT) {
       if (Threads.sleeping) finish_reporting();
-      this.appliedHash=EngineOptions.Hash; tt_allocate(this.appliedHash);
+      try { tt_allocate(EngineOptions.Hash,EngineOptions.ReferenceTT); }
+      catch (error) {
+        EngineOptions.Hash=this.appliedHash; EngineOptions.ReferenceTT=this.appliedReferenceTT;
+        this.output('info string Hash allocation failed: '+error.message); return;
+      }
+      this.appliedHash=EngineOptions.Hash; this.appliedReferenceTT=EngineOptions.ReferenceTT;
+      this.output(`info string Hash: ${TT.clusterCount*CLUSTER_BYTES/1024} KiB logical, ${TT.table.length} entries`);
     }
   }
   setoption(command) {
@@ -3008,6 +3022,7 @@ class EngineUCI {
     const tokens=command.split(' '), hash=Number(tokens[1]||16), threads=Number(tokens[2]||1), limit=Number(tokens[3]||13);
     const fenFile=tokens[4]||'default', limitType=tokens[5]||'depth';
     if (threads!==1 || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires one thread and a positive integer limit'); return; }
+    if (!Number.isInteger(hash) || hash<1 || hash>MAX_HASH_MB) { this.error(`Benchmark Hash must be between 1 and ${MAX_HASH_MB} MiB`); return; }
     EngineOptions.Hash=hash; this.process_settings(); search_clear(); Limits.reset();
     if (limitType==='time') Limits.movetime=limit; else Limits.depth=limit;
     let fens;
@@ -3091,7 +3106,7 @@ function create_receiver(send,output,shutdown,signal) {
     if (token==='go' && active && /^go\b/.test(active)
       && (/\b(infinite|ponder)\b/.test(active) || !/\b(depth|nodes|movetime|wtime|btime)\b/.test(active))) Atomics.store(signal,0,1);
     if (token==='isready' && active && /^go\b/.test(active)
-      && queue.some(s=>/^setoption name Hash\b/i.test(s))) Atomics.store(signal,0,1);
+      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT)\b/i.test(s))) Atomics.store(signal,0,1);
     if (token==='ponderhit') Atomics.store(signal,1,1);
     // With no pending setting changes, UCI readiness does not wait for search.
     if (token==='isready' && active && /^go\b/.test(active) && !queue.length) { output('readyok'); return; }

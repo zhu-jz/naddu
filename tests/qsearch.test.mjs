@@ -7,7 +7,7 @@ import {qsearch_node} from '../src/search.mjs';
 const expected = JSON.parse(fs.readFileSync(new URL('./fixtures/qsearch.json',import.meta.url)));
 test('quiescence returns, move counts, PVs, eval caches and all TT writes match Python', () => {
   for (const fixture of expected) {
-    tt_allocate(1); const pos = new Position(); pos.set(fixture.fen);
+    tt_allocate(1,true); const pos = new Position(); pos.set(fixture.fen);
     if (fixture.warm) { qsearch_node(pos,-32001,32001,0,1,!!pos.st.checkersBB); pos.nodes = 0; }
     const check = fixture.forced_check ?? !!pos.st.checkersBB;
     const value = qsearch_node(pos,fixture.alpha,fixture.beta,fixture.depth,fixture.nt,check);

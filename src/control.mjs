@@ -1,4 +1,4 @@
-export const EngineOptions = {Hash: 1, Threads: 1, Ponder: false, MultiPV: 1, UCI_Chess960: false};
+export const EngineOptions = {Hash: 1, ReferenceTT: false, Threads: 1, Ponder: false, MultiPV: 1, UCI_Chess960: false};
 export class LimitsType {
   constructor() { this.reset(); }
   reset() { this.time = [0,0]; this.inc = [0,0]; this.depth = 0; this.movetime = 0; this.nodes = 0; this.infinite = false; this.startTime = 0; }

@@ -14,8 +14,8 @@ import {BENCH_POSITIONS} from '../src/generated/benchmark.mjs';
 
 export function resetEngine() {
   Threads.workers = []; Threads.counterMoveHistory = null; Threads.stop = false; Threads.searching = false;
-  Object.assign(EngineOptions,{Hash:1,Threads:1,Ponder:false,MultiPV:1,UCI_Chess960:false});
-  tt_allocate(1); ensure_search_worker(); search_clear(); Limits.reset();
+  Object.assign(EngineOptions,{Hash:1,ReferenceTT:true,Threads:1,Ponder:false,MultiPV:1,UCI_Chess960:false});
+  tt_allocate(1,true); ensure_search_worker(); search_clear(); Limits.reset();
 }
 export function normalized(line) { return line.replace(/ (?:time|nps|hashfull) \d+/g,''); }
 export function runJavaScript(commands,depth = 5) {
@@ -25,9 +25,10 @@ export function runJavaScript(commands,depth = 5) {
     if (command === 'ucinewgame') { search_clear(); continue; }
     if (command.startsWith('setoption')) {
       const [,name,value] = /^setoption name (.+) value (.+)$/.exec(command);
-      const parsed = name==='Ponder' || name==='UCI_Chess960' ? value==='true' : Number(value);
-      if (name==='Hash' && parsed!==EngineOptions.Hash) tt_allocate(parsed);
-      EngineOptions[name] = parsed; continue;
+      const parsed = name==='Ponder' || name==='UCI_Chess960' || name==='ReferenceTT' ? value==='true' : Number(value);
+      const changed = parsed!==EngineOptions[name]; EngineOptions[name] = parsed;
+      if ((name==='Hash' || name==='ReferenceTT') && changed) tt_allocate(EngineOptions.Hash,EngineOptions.ReferenceTT);
+      continue;
     }
     set_position(rootPos,command); Limits.reset(); Limits.depth = depth; Limits.startTime = now(); output = [];
     start_thinking(rootPos,false); const pos = Threads.workers[0].pos;
@@ -52,7 +53,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
   }
   assert.equal(actual.length,expected.length);
-  const released=spawnSync(process.execPath,[path.join(root,'naddu.js'),`bench 16 1 ${depth}`],{encoding:'utf8',timeout:3600000,maxBuffer:64*1024*1024,windowsHide:true});
+  const released=spawnSync(process.execPath,[path.join(root,'naddu.js'),'setoption name ReferenceTT value true',`bench 16 1 ${depth}`],{encoding:'utf8',timeout:3600000,maxBuffer:64*1024*1024,windowsHide:true});
   assert.equal(released.status,0,released.stderr);
   const lines=released.stdout.split(/\r?\n/).filter(s=>(s.startsWith('info depth') && s.includes(' score ')) || s.startsWith('bestmove')).map(normalized);
   assert.deepEqual(lines,expected.flatMap(r=>r.output),'released UCI benchmark iterations');

@@ -88,9 +88,32 @@ node naddu.js "bench 16 1 13"
 
 ## Reference parity and development
 
-`Threads` is restricted to one search thread. `MultiPV`, `Ponder`, `Hash` and
-`UCI_Chess960` follow the reference options. The supplied reference fixes its TT
-at 28,672 clusters regardless of `Hash`; changing `Hash` still reallocates it.
+`Hash` now controls the TT's logical capacity in MiB (1–256, default 1), with
+three entries per 32-byte cluster. For example, `Hash=32` provides 1,048,576
+clusters and 3,145,728 entries. JavaScript array and `BigInt` overhead means
+actual process memory exceeds the logical capacity. Configure it through UCI:
+
+```
+setoption name Hash value 32
+isready
+```
+
+Set `ReferenceTT` to `true` to use the supplied Python reference's fixed
+28,672 clusters / 86,016 entries (896 KiB logical), regardless of `Hash`.
+This option defaults to `false`. Resizing clears the TT; cluster lookup,
+replacement, aging and entry fields retain the reference's rules. Larger
+capacities change collisions and search results. The parity tools explicitly
+enable `ReferenceTT` when comparing against the reference:
+
+```
+node naddu.js "setoption name ReferenceTT value true" "bench 16 1 13"
+```
+
+See the [TT validation report](docs/hash-capacity-validation.md) for capacity
+tests and depth-13 benchmark measurements at several sizes.
+
+`Threads` is restricted to one search thread. `MultiPV`, `Ponder` and
+`UCI_Chess960` follow the reference options.
 Its UCI position parser also hard-codes orthodox castling interpretation even
 when `UCI_Chess960` is set. These behaviors are retained for parity.
 
@@ -102,7 +125,8 @@ different nodes; deterministic clock tests verify the time-control logic.
 Naddu's time manager uses a 50-move horizon and a `0.05` low-clock factor,
 instead of the reference's 25 moves and `0.025`. The 10 ms overhead and other
 time-management formulas are retained. This is an intentional time-control
-variation; fixed-depth search parity is preserved. The clock tests use the Python
+variation; fixed-depth search parity is preserved with `ReferenceTT=true`.
+The clock tests use the Python
 oracle with these two constants changed in memory (`npm run reference -- controls50`).
 
 Keep the supplied Python source in `minifish-python/` to regenerate fixtures or
