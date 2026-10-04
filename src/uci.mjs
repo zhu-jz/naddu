@@ -9,15 +9,16 @@ import {EngineOptions, Limits, Threads, set_output} from './control.mjs';
 import {now} from './timeman.mjs';
 import {ensure_search_worker, search_clear, start_thinking, finish_reporting} from './search.mjs';
 import {BENCH_POSITIONS} from './generated/benchmark.mjs';
+import {MAX_THREADS} from './smp.mjs';
 
 export const UCI_OPTIONS = [
-  ['Threads','spin',1,1,1], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
+  ['Threads','spin',1,1,MAX_THREADS], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
   ['Ponder','check',false], ['MultiPV','spin',1,1,256], ['UCI_Chess960','check',false]
 ];
 export function uci_identify(output) {
   output('id name Naddu 1'); output('id author Colin Jenkins and Claude');
   for (const [name,type,value,min,max] of UCI_OPTIONS)
-    output(`option name ${name} type ${type} default ${value}`+(type==='spin' ? ` min ${min} max ${max}` : ''));
+    output(`option name ${name} type ${type} default ${value}`+(type==='spin' ? ` min ${min} max ${name==='Threads' ? Threads.maxThreads : max}` : ''));
   output('uciok');
 }
 export function perft_count(pos,depth) {
@@ -47,9 +48,20 @@ export class EngineUCI {
     this.output = output; this.error = error; this.readFile = readFile;
     this.appliedHash = EngineOptions.Hash; this.appliedReferenceTT = EngineOptions.ReferenceTT;
     tt_allocate(this.appliedHash,this.appliedReferenceTT); ensure_search_worker(); search_clear();
+    if (Threads.backend) Threads.backend.resize(EngineOptions.Threads);
+    this.appliedThreads=Threads.numThreads;
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
+    if (this.appliedThreads!==EngineOptions.Threads) {
+      if (Threads.sleeping) finish_reporting();
+      if (!Threads.backend && EngineOptions.Threads>1) {
+        EngineOptions.Threads=this.appliedThreads; this.output('info string SMP requires worker threads and shared memory');
+      } else {
+        if (Threads.backend) Threads.backend.resize(EngineOptions.Threads);
+        this.appliedThreads=Threads.numThreads; this.output(`info string Threads: ${this.appliedThreads}`);
+      }
+    }
     if (this.appliedHash!==EngineOptions.Hash || this.appliedReferenceTT!==EngineOptions.ReferenceTT) {
       if (Threads.sleeping) finish_reporting();
       try { tt_allocate(EngineOptions.Hash,EngineOptions.ReferenceTT); }
@@ -68,7 +80,10 @@ export class EngineUCI {
     if (!option) { this.output('No such option: '+match[1]); return; }
     const [name,type,,min,max] = option, value = match[2]===undefined ? 'true' : match[2];
     if (type==='check') { if (value==='true' || value==='false') EngineOptions[name]=value==='true'; }
-    else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) EngineOptions[name]=Number(value);
+    else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) {
+      if (name==='Threads' && Number(value)>Threads.maxThreads) this.output('info string SMP requires worker threads and shared memory');
+      else EngineOptions[name]=Number(value);
+    }
   }
   go(command) {
     if (Threads.sleeping) finish_reporting();
@@ -102,9 +117,9 @@ export class EngineUCI {
   benchmark(command) {
     const tokens=command.split(' '), hash=Number(tokens[1]||16), threads=Number(tokens[2]||1), limit=Number(tokens[3]||13);
     const fenFile=tokens[4]||'default', limitType=tokens[5]||'depth';
-    if (threads!==1 || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires one thread and a positive integer limit'); return; }
+    if (!Number.isInteger(threads) || threads<1 || threads>Threads.maxThreads || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires a supported thread count and a positive integer limit'); return; }
     if (!Number.isInteger(hash) || hash<1 || hash>MAX_HASH_MB) { this.error(`Benchmark Hash must be between 1 and ${MAX_HASH_MB} MiB`); return; }
-    EngineOptions.Hash=hash; this.process_settings(); search_clear(); Limits.reset();
+    EngineOptions.Hash=hash; EngineOptions.Threads=threads; this.process_settings(); search_clear(); Limits.reset();
     if (limitType==='time') Limits.movetime=limit; else Limits.depth=limit;
     let fens;
     if (fenFile.toLowerCase()==='default') fens=BENCH_POSITIONS;
@@ -131,7 +146,7 @@ export class EngineUCI {
       case 'uci': uci_identify(this.output); break;
       case 'isready': this.process_settings(); this.output('readyok'); break;
       case 'setoption': this.setoption(command); break;
-      case 'ucinewgame': this.process_settings(); search_clear(); break;
+      case 'ucinewgame': if (Threads.sleeping) finish_reporting(); this.process_settings(); search_clear(); break;
       case 'position': set_position(this.root,command); break;
       case 'go': this.go(command); break;
       case 'stop': case 'quit':

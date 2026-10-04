@@ -33,14 +33,15 @@ export function init_search_sentinels(pos) {
 }
 export function ensure_search_worker() {
   if (!Threads.workers.length) {
-    Threads.counterMoveHistory = create_counter_move_history();
+    Threads.counterMoveHistory = Threads.backend ? Threads.backend.history : create_counter_move_history();
     Threads.workers.push({pos:new Position(true,Threads.counterMoveHistory)});
   }
 }
 export function search_clear() {
   tt_clear();
   if (Threads.counterMoveHistory) clear_counter_move_history(Threads.counterMoveHistory);
-  for (const worker of Threads.workers) clear_histories(worker.pos);
+  for (const worker of Threads.workers) if (!worker.remote) clear_histories(worker.pos);
+  if (Threads.backend) Threads.backend.clear_helpers();
   mainThread.previousScore = VALUE_INFINITE; mainThread.bestPreviousAverageScore = VALUE_INFINITE; mainThread.previousTimeReduction = 1;
 }
 export function search_init() { for (let i = 1; i < MAX_MOVES; i++) Reductions[i] = Math.trunc(21.14*Math.log(i)); }
@@ -426,7 +427,9 @@ export function mainthread_search() {
   const pos = Threads.workers[0].pos; time_init(pos.sideToMove,pos.gamePly,Limits); tt_new_search();
   if (pos.rootMoves.size>0) {
     for (const worker of Threads.workers) worker.pos.bestMoveChanges = 0;
-    thread_search(pos);
+    if (Threads.backend) Threads.backend.start_helpers(pos);
+    try { thread_search(pos); }
+    catch (error) { Threads.request_stop(); if (Threads.backend) Threads.backend.wait_helpers(); throw error; }
   }
   // UCI controllers defer bestmove for infinite/ponder searches until stop.
   if (!Threads.stop && (Threads.ponder || Limits.infinite)) { Threads.sleeping = true; return; }
@@ -457,6 +460,7 @@ export function select_best_thread(mainPos) {
 }
 export function finish_reporting() {
   const pos = Threads.workers[0].pos; Threads.sleeping = false; Threads.request_stop();
+  if (Threads.backend) Threads.backend.wait_helpers();
   if (pos.rootMoves.size===0) {
     const rm = pos.rootMoves.move[0]; rm.pv[0] = 0; rm.pvSize = 1; pos.rootMoves.size = 1;
     emit_output(`info depth 0 score ${uci_value(pos.st.checkersBB ? -VALUE_MATE : VALUE_DRAW)}`);
@@ -471,12 +475,18 @@ export function finish_reporting() {
 export function start_thinking(root,ponderMode = false) {
   ensure_search_worker(); Threads.stopOnPonderhit = false; Threads.stop = false; Threads.increaseDepth = true;
   Threads.ponder = ponderMode; Threads.sleeping = false; Threads.searching = true;
-  const legal = generate_legal(root), pos = Threads.workers[0].pos; pos.copy_root_from(root);
+  const legal = generate_legal(root), pos = Threads.workers[0].pos;
+  prepare_worker_root(pos,root,legal);
+  if (Threads.backend) Threads.backend.root = root;
+  mainthread_search();
+}
+export function prepare_worker_root(pos,root,legal) {
+  pos.copy_root_from(root);
   pos.multiPV = Math.min(EngineOptions.MultiPV,legal.length);
   if (!pos.rootMoves) pos.rootMoves = new RootMoves();
   pos.rootMoves.size = legal.length;
   for (let i = 0; i < legal.length; i++) pos.rootMoves.move[i].reset_for_search(legal[i].move);
-  init_search_sentinels(pos); mainthread_search();
+  init_search_sentinels(pos);
 }
 export function uci_print_pv(pos,depth,alpha,beta) {
   const elapsed = time_elapsed()+1, rm = pos.rootMoves, nodes = Threads.nodes_searched();

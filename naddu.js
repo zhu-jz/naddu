@@ -1852,7 +1852,7 @@ function do_move(pos,m,givesCheck) {
   st.key = key;
   const wKing = lsb(pieces[KING] & colors[WHITE]), bKing = lsb(pieces[KING] & colors[BLACK]);
   st.checkersBB = givesCheck ? attackers_to_occ(pos,them === WHITE ? wKing : bKing,pieces[0]) & colors[us] : 0n;
-  pos.sideToMove = 1-pos.sideToMove; pos.nodes++; pos.set_check_info(wKing,bKing);
+  pos.sideToMove = 1-pos.sideToMove; pos.nodes++; publish_nodes(pos); pos.set_check_info(wKing,bKing);
   if (piece === W_KING && ((file_of(from)>FILE_D) !== (file_of(to)>FILE_D))) nnue_accumulator_refresh(st.accumulator,pos,WHITE,wKing);
   else nnue_accumulator_update(st.accumulator,wKing,WHITE,dp,old.accumulator);
   if (piece === B_KING && ((file_of(from)>FILE_D) !== (file_of(to)>FILE_D))) nnue_accumulator_refresh(st.accumulator,pos,BLACK,bKing);
@@ -2466,16 +2466,24 @@ const Limits = new LimitsType();
 let stopSignal = null;
 function set_stop_signal(signal) { stopSignal = signal; }
 const Threads = {
-  workers: [], _stop: false, _ponder: false, stopOnPonderhit: false, increaseDepth: true,
+  workers: [], backend: null, maxThreads: 1, sharedNodes: null, _stop: false, _ponder: false, _stopOnPonderhit: false, _increaseDepth: true,
   get stop() { return this._stop || !!(stopSignal && (Atomics.load(stopSignal,0) || (Atomics.load(stopSignal,1) && this.stopOnPonderhit))); },
-  set stop(value) { this._stop = value; },
+  set stop(value) { this._stop = value; if (stopSignal) Atomics.store(stopSignal,0,Number(value)); },
   get ponder() { return this._ponder && !(stopSignal && Atomics.load(stopSignal,1)); },
   set ponder(value) { this._ponder = value; },
+  get stopOnPonderhit() { return stopSignal && stopSignal.length>3 ? !!Atomics.load(stopSignal,3) : this._stopOnPonderhit; },
+  set stopOnPonderhit(value) { this._stopOnPonderhit = value; if (stopSignal && stopSignal.length>3) Atomics.store(stopSignal,3,Number(value)); },
+  get increaseDepth() { return stopSignal && stopSignal.length>2 ? !!Atomics.load(stopSignal,2) : this._increaseDepth; },
+  set increaseDepth(value) { this._increaseDepth = value; if (stopSignal && stopSignal.length>2) Atomics.store(stopSignal,2,Number(value)); },
   searching: false, sleeping: false, counterMoveHistory: null,
   get numThreads() { return this.workers.length; },
-  nodes_searched() { return this.workers.reduce((sum,w)=>sum+w.pos.nodes,0); },
+  nodes_searched() {
+    if (this.sharedNodes) { let nodes = 0; for (let i = 0; i<this.numThreads; i++) nodes += Number(Atomics.load(this.sharedNodes,i)); return nodes; }
+    return this.workers.reduce((sum,w)=>sum+w.pos.nodes,0);
+  },
   request_stop() { this.stop = true; }
 };
+function publish_nodes(pos) { if (Threads.sharedNodes) Atomics.store(Threads.sharedNodes,pos.threadIdx,BigInt(pos.nodes)); }
 const mainThread = {previousScore: 32001, bestPreviousAverageScore: 32001, previousTimeReduction: 1, iterValue: [0,0,0,0]};
 let engineOutput = () => {};
 function set_output(output) { engineOutput = output; }
@@ -2519,14 +2527,15 @@ function init_search_sentinels(pos) {
 }
 function ensure_search_worker() {
   if (!Threads.workers.length) {
-    Threads.counterMoveHistory = create_counter_move_history();
+    Threads.counterMoveHistory = Threads.backend ? Threads.backend.history : create_counter_move_history();
     Threads.workers.push({pos:new Position(true,Threads.counterMoveHistory)});
   }
 }
 function search_clear() {
   tt_clear();
   if (Threads.counterMoveHistory) clear_counter_move_history(Threads.counterMoveHistory);
-  for (const worker of Threads.workers) clear_histories(worker.pos);
+  for (const worker of Threads.workers) if (!worker.remote) clear_histories(worker.pos);
+  if (Threads.backend) Threads.backend.clear_helpers();
   mainThread.previousScore = VALUE_INFINITE; mainThread.bestPreviousAverageScore = VALUE_INFINITE; mainThread.previousTimeReduction = 1;
 }
 function search_init() { for (let i = 1; i < MAX_MOVES; i++) Reductions[i] = Math.trunc(21.14*Math.log(i)); }
@@ -2912,7 +2921,9 @@ function mainthread_search() {
   const pos = Threads.workers[0].pos; time_init(pos.sideToMove,pos.gamePly,Limits); tt_new_search();
   if (pos.rootMoves.size>0) {
     for (const worker of Threads.workers) worker.pos.bestMoveChanges = 0;
-    thread_search(pos);
+    if (Threads.backend) Threads.backend.start_helpers(pos);
+    try { thread_search(pos); }
+    catch (error) { Threads.request_stop(); if (Threads.backend) Threads.backend.wait_helpers(); throw error; }
   }
   // UCI controllers defer bestmove for infinite/ponder searches until stop.
   if (!Threads.stop && (Threads.ponder || Limits.infinite)) { Threads.sleeping = true; return; }
@@ -2943,6 +2954,7 @@ function select_best_thread(mainPos) {
 }
 function finish_reporting() {
   const pos = Threads.workers[0].pos; Threads.sleeping = false; Threads.request_stop();
+  if (Threads.backend) Threads.backend.wait_helpers();
   if (pos.rootMoves.size===0) {
     const rm = pos.rootMoves.move[0]; rm.pv[0] = 0; rm.pvSize = 1; pos.rootMoves.size = 1;
     emit_output(`info depth 0 score ${uci_value(pos.st.checkersBB ? -VALUE_MATE : VALUE_DRAW)}`);
@@ -2957,12 +2969,18 @@ function finish_reporting() {
 function start_thinking(root,ponderMode = false) {
   ensure_search_worker(); Threads.stopOnPonderhit = false; Threads.stop = false; Threads.increaseDepth = true;
   Threads.ponder = ponderMode; Threads.sleeping = false; Threads.searching = true;
-  const legal = generate_legal(root), pos = Threads.workers[0].pos; pos.copy_root_from(root);
+  const legal = generate_legal(root), pos = Threads.workers[0].pos;
+  prepare_worker_root(pos,root,legal);
+  if (Threads.backend) Threads.backend.root = root;
+  mainthread_search();
+}
+function prepare_worker_root(pos,root,legal) {
+  pos.copy_root_from(root);
   pos.multiPV = Math.min(EngineOptions.MultiPV,legal.length);
   if (!pos.rootMoves) pos.rootMoves = new RootMoves();
   pos.rootMoves.size = legal.length;
   for (let i = 0; i < legal.length; i++) pos.rootMoves.move[i].reset_for_search(legal[i].move);
-  init_search_sentinels(pos); mainthread_search();
+  init_search_sentinels(pos);
 }
 function uci_print_pv(pos,depth,alpha,beta) {
   const elapsed = time_elapsed()+1, rm = pos.rootMoves, nodes = Threads.nodes_searched();
@@ -3037,16 +3055,158 @@ const BENCH_POSITIONS = [
   "setoption name UCI_Chess960 value false"
 ];
 
+// ---- smp.mjs ----
+
+const MAX_THREADS = 16;
+const SMP_STRIDE = 4, SMP_RESULT_SIZE = MAX_PLY+16, SMP_ERROR_SIZE = 1024;
+function smp_status(stats,index,value) { Atomics.store(stats,index*SMP_STRIDE,value); Atomics.notify(stats,index*SMP_STRIDE); }
+function smp_bind_changes(pos,stats,index) {
+  Object.defineProperty(pos,'bestMoveChanges',{configurable:true,
+    get() { return Atomics.load(stats,index*SMP_STRIDE+1); },
+    set(value) { Atomics.store(stats,index*SMP_STRIDE+1,value); }});
+}
+function smp_failure(shared,index,error) {
+  const message=String(error.stack || error), start=index*SMP_ERROR_SIZE;
+  shared.errors.fill(0,start,start+SMP_ERROR_SIZE);
+  for(let i=0;i<Math.min(message.length,SMP_ERROR_SIZE-1);i++) shared.errors[start+i]=message.charCodeAt(i);
+  Atomics.store(shared.signal,0,1); smp_status(shared.stats,index,-1);
+}
+function report_smp_helper_error(descriptor,error) {
+  smp_failure({signal:new Int32Array(descriptor.signal),stats:new Int32Array(descriptor.stats),
+    errors:new Uint16Array(descriptor.errors)},descriptor.index,error);
+}
+function smp_wait(shared,index,wanted) {
+  const deadline=Date.now()+10000, slot=index*SMP_STRIDE;
+  while(Atomics.load(shared.stats,slot)!==wanted) {
+    const status=Atomics.load(shared.stats,slot);
+    if(status===-1) {
+      let message=''; for(let i=index*SMP_ERROR_SIZE;i<(index+1)*SMP_ERROR_SIZE && shared.errors[i];i++) message+=String.fromCharCode(shared.errors[i]);
+      throw new Error(`SMP worker ${index} failed: ${message}`);
+    }
+    if(Date.now()>deadline) throw new Error(`SMP worker ${index} timed out waiting for state ${wanted}`);
+    Atomics.wait(shared.stats,slot,status,50);
+  }
+}
+function smp_publish_result(pos,shared,index) {
+  const result=shared.results.subarray(index*SMP_RESULT_SIZE,(index+1)*SMP_RESULT_SIZE), rm=pos.rootMoves.move[0];
+  result[0]=pos.completedDepth; result[1]=pos.rootDepth; result[2]=pos.multiPV; result[3]=pos.pvIdx;
+  result[4]=pos.rootMoves.size; result[5]=rm.score; result[6]=rm.previousScore; result[7]=rm.averageScore;
+  result[8]=rm.selDepth; result[9]=rm.pvSize;
+  result.fill(0,10); result.set(rm.pv.slice(0,rm.pvSize),10);
+}
+function smp_read_result(worker,shared,index) {
+  const result=shared.results.subarray(index*SMP_RESULT_SIZE,(index+1)*SMP_RESULT_SIZE), pos=worker.pos;
+  pos.completedDepth=result[0]; pos.rootDepth=result[1]; pos.multiPV=result[2]; pos.pvIdx=result[3];
+  pos.rootMoves={size:result[4],move:[{score:result[5],previousScore:result[6],averageScore:result[7],
+    selDepth:result[8],pvSize:result[9],pv:Array.from(result.subarray(10,10+MAX_PLY+1))}]};
+}
+function create_smp_pool(factory,signal) {
+  const shared={signal,stats:new Int32Array(new SharedArrayBuffer(MAX_THREADS*SMP_STRIDE*4)),
+    nodes:new BigUint64Array(new SharedArrayBuffer(MAX_THREADS*8)),
+    results:new Int32Array(new SharedArrayBuffer(MAX_THREADS*SMP_RESULT_SIZE*4)),
+    errors:new Uint16Array(new SharedArrayBuffer(MAX_THREADS*SMP_ERROR_SIZE*2))};
+  const historyBuffer=new SharedArrayBuffer(16*64*1024), helpers=[];
+  const pool={history:create_counter_move_history(historyBuffer,true),root:null,running:false,
+    resize(num) {
+      if(!Number.isInteger(num) || num<1 || num>MAX_THREADS) throw new RangeError('Threads must be between 1 and 16');
+      smp_bind_changes(Threads.workers[0].pos,shared.stats,0);
+      while(helpers.length>num-1) {
+        const helper=helpers.pop(); helper.send({kind:'exit'}); smp_wait(shared,helper.index,9); helper.terminate(); Threads.workers.pop();
+      }
+      try {
+        while(helpers.length<num-1) {
+          const index=helpers.length+1; smp_status(shared.stats,index,1);
+          const helper=factory(index,{index,signal:signal.buffer,history:historyBuffer,stats:shared.stats.buffer,
+            nodes:shared.nodes.buffer,results:shared.results.buffer,errors:shared.errors.buffer});
+          helper.index=index; helpers.push(helper);
+          const pos={threadIdx:index,completedDepth:0,rootMoves:null};
+          Object.defineProperty(pos,'nodes',{get(){return Number(Atomics.load(shared.nodes,index));}});
+          smp_bind_changes(pos,shared.stats,index); Threads.workers.push({pos,remote:true});
+          smp_wait(shared,index,0);
+        }
+        tt_set_shared(num>1); Threads.sharedNodes=num>1 ? shared.nodes : null;
+      } catch(error) { this.shutdown(); throw error; }
+    },
+    start_helpers(pos) {
+      if(!helpers.length) return;
+      shared.nodes.fill(0n); this.running=true;
+      const legal=pos.rootMoves.move.slice(0,pos.rootMoves.size).map(rm=>({move:rm.pv[0]}));
+      try {
+        for(const helper of helpers) {
+          smp_status(shared.stats,helper.index,1); Atomics.store(shared.stats,helper.index*SMP_STRIDE+2,0);
+          helper.send({kind:'search',root:this.root,legal,limits:Limits,options:EngineOptions,time:Time,
+            tt:tt_shared_descriptor(),numThreads:Threads.numThreads,ponder:Threads.ponder});
+        }
+        for(const helper of helpers) smp_wait(shared,helper.index,2);
+      } catch(error) { Threads.request_stop(); throw error; }
+      finally {
+        for(const helper of helpers) { Atomics.store(shared.stats,helper.index*SMP_STRIDE+2,1); Atomics.notify(shared.stats,helper.index*SMP_STRIDE+2); }
+      }
+    },
+    wait_helpers() {
+      if(!this.running) return;
+      let failure=null;
+      for(const helper of helpers) {
+        try { smp_wait(shared,helper.index,0); smp_read_result(Threads.workers[helper.index],shared,helper.index); }
+        catch(error) { failure ||= error; }
+      }
+      this.running=false; if(failure) throw failure;
+    },
+    clear_helpers() {
+      for(const helper of helpers) { smp_status(shared.stats,helper.index,1); helper.send({kind:'clear'}); }
+      for(const helper of helpers) smp_wait(shared,helper.index,0);
+    },
+    shutdown() {
+      Threads.request_stop();
+      for(const helper of helpers) {
+        Atomics.store(shared.stats,helper.index*SMP_STRIDE+2,1); Atomics.notify(shared.stats,helper.index*SMP_STRIDE+2);
+        helper.terminate();
+      }
+      helpers.length=0; Threads.workers.splice(1); Threads.sharedNodes=null;
+      Threads.backend=null; Threads.maxThreads=1; this.running=false;
+    }
+  };
+  Threads.backend=pool; Threads.maxThreads=MAX_THREADS;
+  return pool;
+}
+function install_smp_helper(descriptor) {
+  const index=descriptor.index, shared={signal:new Int32Array(descriptor.signal),stats:new Int32Array(descriptor.stats),
+    nodes:new BigUint64Array(descriptor.nodes),results:new Int32Array(descriptor.results),errors:new Uint16Array(descriptor.errors)};
+  set_stop_signal(shared.signal); set_output(()=>{});
+  let pos;
+  try {
+    const history=create_counter_move_history(descriptor.history); pos=new Position(true,history); pos.threadIdx=index;
+    Threads.counterMoveHistory=history; smp_bind_changes(pos,shared.stats,index); smp_status(shared.stats,index,0);
+  } catch(error) { smp_failure(shared,index,error); return ()=>true; }
+  return message=>{
+    try {
+      if(message.kind==='exit') { smp_status(shared.stats,index,9); return true; }
+      if(message.kind==='clear') { clear_histories(pos); smp_status(shared.stats,index,0); return false; }
+      if(message.kind!=='search') throw new Error('Unknown SMP helper command');
+      Object.assign(EngineOptions,message.options); Object.assign(Limits,message.limits); Object.assign(Time,message.time);
+      Threads.workers=Array.from({length:message.numThreads},()=>({pos:{}})); Threads.workers[index]={pos};
+      Threads.sharedNodes=shared.nodes; Threads._stop=false; Threads._ponder=message.ponder;
+      tt_attach_shared(message.tt); prepare_worker_root(pos,message.root,message.legal);
+      Atomics.store(shared.nodes,index,0n); pos.bestMoveChanges=0; smp_status(shared.stats,index,2);
+      const goSlot=index*SMP_STRIDE+2;
+      while(!Atomics.load(shared.stats,goSlot)) Atomics.wait(shared.stats,goSlot,0);
+      smp_status(shared.stats,index,3); thread_search(pos);
+      smp_publish_result(pos,shared,index); smp_status(shared.stats,index,0);
+    } catch(error) { smp_failure(shared,index,error); }
+    return false;
+  };
+}
+
 // ---- uci.mjs ----
 
 const UCI_OPTIONS = [
-  ['Threads','spin',1,1,1], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
+  ['Threads','spin',1,1,MAX_THREADS], ['Hash','spin',1,1,MAX_HASH_MB], ['ReferenceTT','check',false],
   ['Ponder','check',false], ['MultiPV','spin',1,1,256], ['UCI_Chess960','check',false]
 ];
 function uci_identify(output) {
   output('id name Naddu 1'); output('id author Colin Jenkins and Claude');
   for (const [name,type,value,min,max] of UCI_OPTIONS)
-    output(`option name ${name} type ${type} default ${value}`+(type==='spin' ? ` min ${min} max ${max}` : ''));
+    output(`option name ${name} type ${type} default ${value}`+(type==='spin' ? ` min ${min} max ${name==='Threads' ? Threads.maxThreads : max}` : ''));
   output('uciok');
 }
 function perft_count(pos,depth) {
@@ -3076,9 +3236,20 @@ class EngineUCI {
     this.output = output; this.error = error; this.readFile = readFile;
     this.appliedHash = EngineOptions.Hash; this.appliedReferenceTT = EngineOptions.ReferenceTT;
     tt_allocate(this.appliedHash,this.appliedReferenceTT); ensure_search_worker(); search_clear();
+    if (Threads.backend) Threads.backend.resize(EngineOptions.Threads);
+    this.appliedThreads=Threads.numThreads;
     this.root = new Position(false); this.root.set(StartFEN); set_output(output);
   }
   process_settings() {
+    if (this.appliedThreads!==EngineOptions.Threads) {
+      if (Threads.sleeping) finish_reporting();
+      if (!Threads.backend && EngineOptions.Threads>1) {
+        EngineOptions.Threads=this.appliedThreads; this.output('info string SMP requires worker threads and shared memory');
+      } else {
+        if (Threads.backend) Threads.backend.resize(EngineOptions.Threads);
+        this.appliedThreads=Threads.numThreads; this.output(`info string Threads: ${this.appliedThreads}`);
+      }
+    }
     if (this.appliedHash!==EngineOptions.Hash || this.appliedReferenceTT!==EngineOptions.ReferenceTT) {
       if (Threads.sleeping) finish_reporting();
       try { tt_allocate(EngineOptions.Hash,EngineOptions.ReferenceTT); }
@@ -3097,7 +3268,10 @@ class EngineUCI {
     if (!option) { this.output('No such option: '+match[1]); return; }
     const [name,type,,min,max] = option, value = match[2]===undefined ? 'true' : match[2];
     if (type==='check') { if (value==='true' || value==='false') EngineOptions[name]=value==='true'; }
-    else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) EngineOptions[name]=Number(value);
+    else if (/^[+-]?\d+$/.test(value) && Number(value)>=min && Number(value)<=max) {
+      if (name==='Threads' && Number(value)>Threads.maxThreads) this.output('info string SMP requires worker threads and shared memory');
+      else EngineOptions[name]=Number(value);
+    }
   }
   go(command) {
     if (Threads.sleeping) finish_reporting();
@@ -3131,9 +3305,9 @@ class EngineUCI {
   benchmark(command) {
     const tokens=command.split(' '), hash=Number(tokens[1]||16), threads=Number(tokens[2]||1), limit=Number(tokens[3]||13);
     const fenFile=tokens[4]||'default', limitType=tokens[5]||'depth';
-    if (threads!==1 || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires one thread and a positive integer limit'); return; }
+    if (!Number.isInteger(threads) || threads<1 || threads>Threads.maxThreads || !Number.isSafeInteger(limit) || limit<1) { this.error('Benchmark requires a supported thread count and a positive integer limit'); return; }
     if (!Number.isInteger(hash) || hash<1 || hash>MAX_HASH_MB) { this.error(`Benchmark Hash must be between 1 and ${MAX_HASH_MB} MiB`); return; }
-    EngineOptions.Hash=hash; this.process_settings(); search_clear(); Limits.reset();
+    EngineOptions.Hash=hash; EngineOptions.Threads=threads; this.process_settings(); search_clear(); Limits.reset();
     if (limitType==='time') Limits.movetime=limit; else Limits.depth=limit;
     let fens;
     if (fenFile.toLowerCase()==='default') fens=BENCH_POSITIONS;
@@ -3160,7 +3334,7 @@ class EngineUCI {
       case 'uci': uci_identify(this.output); break;
       case 'isready': this.process_settings(); this.output('readyok'); break;
       case 'setoption': this.setoption(command); break;
-      case 'ucinewgame': this.process_settings(); search_clear(); break;
+      case 'ucinewgame': if (Threads.sleeping) finish_reporting(); this.process_settings(); search_clear(); break;
       case 'position': set_position(this.root,command); break;
       case 'go': this.go(command); break;
       case 'stop': case 'quit':
@@ -3213,10 +3387,11 @@ function create_receiver(send,output,shutdown,signal) {
     command=canonical_command(command); if (!command || quitting) return;
     const token=command.split(' ')[0];
     if (token==='stop' || token==='quit') Atomics.store(signal,0,1);
+    if (token==='ucinewgame' && active && /^go\b/.test(active)) Atomics.store(signal,0,1);
     if (token==='go' && active && /^go\b/.test(active)
       && (/\b(infinite|ponder)\b/.test(active) || !/\b(depth|nodes|movetime|wtime|btime)\b/.test(active))) Atomics.store(signal,0,1);
     if (token==='isready' && active && /^go\b/.test(active)
-      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT)\b/i.test(s))) Atomics.store(signal,0,1);
+      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT|Threads)\b/i.test(s))) Atomics.store(signal,0,1);
     if (token==='ponderhit') Atomics.store(signal,1,1);
     // With no pending setting changes, UCI readiness does not wait for search.
     if (token==='isready' && active && /^go\b/.test(active) && !queue.length) { output('readyok'); return; }
@@ -3243,18 +3418,27 @@ function install_entry() {
   const isNode=typeof process!=='undefined' && process.versions && process.versions.node;
   if (isNode) {
     const {Worker,isMainThread,workerData,parentPort}=require('node:worker_threads');
+    if (!isMainThread && workerData && workerData.nadduHelper) {
+      const handle=install_smp_helper(workerData.nadduHelper);
+      parentPort.on('message',message=>{if(handle(message)) parentPort.close();}); return;
+    }
     if (!isMainThread && workerData && workerData.nadduSearch) {
-      set_stop_signal(new Int32Array(workerData.signal));
+      const signal=new Int32Array(workerData.signal); set_stop_signal(signal);
+      const pool=create_smp_pool((index,descriptor)=>{
+        const worker=new Worker(__filename,{workerData:{nadduHelper:descriptor}});
+        worker.on('error',error=>{report_smp_helper_error(descriptor,error);parentPort.postMessage({failure:error.stack});});
+        return {send:message=>worker.postMessage(message),terminate(){worker.terminate();worker.unref();}};
+      },signal);
       const engine=new EngineUCI(line=>parentPort.postMessage({line}),line=>parentPort.postMessage({error:line}),file=>require('node:fs').readFileSync(file,'utf8'));
       parentPort.on('message',command=>{
         try {
           const quit=engine.execute(command); parentPort.postMessage({done:true,quit});
-          if (quit) parentPort.close();
-        } catch (error) { parentPort.postMessage({failure:error.stack}); }
+          if (quit) { pool.shutdown(); parentPort.close(); }
+        } catch (error) { pool.shutdown(); parentPort.postMessage({failure:error.stack}); }
       });
       return;
     }
-    const signal=new Int32Array(new SharedArrayBuffer(8));
+    const signal=new Int32Array(new SharedArrayBuffer(16));
     const worker=new Worker(__filename,{workerData:{nadduSearch:true,signal:signal.buffer}});
     const output=line=>process.stdout.write(String(line)+'\n'), error=line=>process.stderr.write(String(line)+'\n');
     let input=null;
@@ -3278,28 +3462,50 @@ function install_entry() {
     return;
   }
   if (typeof postMessage!=='function') return;
-  let engine=null,receiver=null;
+  let engine=null,receiver=null,pool=null,helper=null;
   globalThis.onmessage=event=>{
     const message=event.data;
+    if (message && typeof message==='object' && message.nadduHelper) { helper=install_smp_helper(message.nadduHelper); return; }
+    if (helper) { if(helper(message)) close(); return; }
     // A nested classic worker receives its control buffer before commands.
     if (message && typeof message==='object' && message.nadduSearch) {
-      set_stop_signal(new Int32Array(message.signal));
+      const signal=new Int32Array(message.signal); set_stop_signal(signal);
+      pool=create_smp_pool((index,descriptor)=>{
+        // Browser child startup needs a live event loop. The receiver creates
+        // helpers while this compute worker waits on their shared ready flags.
+        postMessage({helperCreate:descriptor});
+        return {send:message=>postMessage({helperCommand:{index,message}}),terminate:()=>postMessage({helperTerminate:index})};
+      },signal);
       engine=new EngineUCI(line=>postMessage({line}),line=>postMessage({error:line}));
       return;
     }
     if (engine) {
-      const quit=engine.execute(String(message));
-      postMessage({done:true,quit}); if (quit) close(); return;
+      try {
+        const quit=engine.execute(String(message));
+        postMessage({done:true,quit}); if (quit) {pool.shutdown();close();}
+      } catch(error) {pool.shutdown();postMessage({failure:error.stack});}
+      return;
     }
     if (!receiver) {
       if (typeof SharedArrayBuffer==='function' && typeof Worker==='function') {
-        const signal=new Int32Array(new SharedArrayBuffer(8)), worker=new Worker(location.href);
-        receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),()=>{ worker.terminate(); close(); },signal);
+        const signal=new Int32Array(new SharedArrayBuffer(16)), worker=new Worker(location.href);
+        const helpers=new Map();
+        const shutdown=()=>{for(const helper of helpers.values()) helper.terminate();helpers.clear();worker.terminate();close();};
+        receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),shutdown,signal);
         worker.onmessage=event=>{
           const data=event.data;
-          if (data.line!==undefined) postMessage(data.line);
+          if (data.helperCreate) {
+            const descriptor=data.helperCreate, helper=new Worker(location.href); helpers.set(descriptor.index,helper);
+            helper.onerror=event=>{report_smp_helper_error(descriptor,new Error(event.message));event.preventDefault();};
+            helper.postMessage({nadduHelper:descriptor});
+          } else if (data.helperCommand) {
+            const {index,message}=data.helperCommand; helpers.get(index).postMessage(message);
+          } else if (data.helperTerminate!==undefined) {
+            helpers.get(data.helperTerminate)?.terminate(); helpers.delete(data.helperTerminate);
+          } else if (data.line!==undefined) postMessage(data.line);
           else if (data.error!==undefined) postMessage(data.error);
           else if (data.done) receiver.done(data);
+          else if (data.failure) { shutdown(); throw new Error(data.failure); }
         };
         worker.onerror=event=>{ throw new Error(event.message); };
         worker.postMessage({nadduSearch:true,signal:signal.buffer});

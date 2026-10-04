@@ -11,6 +11,7 @@ import {AllSquares, PawnAttacks, PseudoAttacks, BetweenBB, sq_bb, aligned, lsb,
 import {NNUEAccumulator, DirtyPieces, DP_NORMAL, DP_CAPTURE, DP_CASTLING,
   nnue_accumulator_refresh, nnue_accumulator_update} from './nnue.mjs';
 import {generate_quiets, generate_legal} from './movegen.mjs';
+import {publish_nodes} from './control.mjs';
 
 export class PRNG {
   constructor(seed) { this.s = BigInt(seed); }
@@ -368,7 +369,7 @@ export function do_move(pos,m,givesCheck) {
   st.key = key;
   const wKing = lsb(pieces[KING] & colors[WHITE]), bKing = lsb(pieces[KING] & colors[BLACK]);
   st.checkersBB = givesCheck ? attackers_to_occ(pos,them === WHITE ? wKing : bKing,pieces[0]) & colors[us] : 0n;
-  pos.sideToMove = 1-pos.sideToMove; pos.nodes++; pos.set_check_info(wKing,bKing);
+  pos.sideToMove = 1-pos.sideToMove; pos.nodes++; publish_nodes(pos); pos.set_check_info(wKing,bKing);
   if (piece === W_KING && ((file_of(from)>FILE_D) !== (file_of(to)>FILE_D))) nnue_accumulator_refresh(st.accumulator,pos,WHITE,wKing);
   else nnue_accumulator_update(st.accumulator,wKing,WHITE,dp,old.accumulator);
   if (piece === B_KING && ((file_of(from)>FILE_D) !== (file_of(to)>FILE_D))) nnue_accumulator_refresh(st.accumulator,pos,BLACK,bKing);

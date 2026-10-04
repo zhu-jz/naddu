@@ -18,7 +18,7 @@ export const CORE_FILES = ['constants.mjs','generated/magics.mjs','bitboard.mjs'
 export const CORE_NAMES = ['MAX_PLY','make_move','c_div','make_key','sq_bb','attacks_bb_rook','attacks_bb_bishop','BetweenBB',
   'NNUE','nnue_evaluate','evaluate','Position','do_move','undo_move','generate_legal','StartFEN','set_position','uci_move',
   'TT','tt_probe','tt_allocate','Threads','Limits','EngineOptions','set_output','start_thinking'];
-export function release_bundle() { return bundle([...CORE_FILES,'generated/benchmark.mjs','uci.mjs','entry.mjs'],[...CORE_NAMES,'EngineUCI']); }
+export function release_bundle() { return bundle([...CORE_FILES,'generated/benchmark.mjs','smp.mjs','uci.mjs','entry.mjs'],[...CORE_NAMES,'EngineUCI']); }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.join(root, 'scripts/build.mjs')) {
   const output = path.join(root, 'build/minifish.js');

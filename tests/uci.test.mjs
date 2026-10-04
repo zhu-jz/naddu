@@ -13,7 +13,7 @@ test('release artifact is reproducible and command-line UCI uses the verified co
   assert.equal(source,release_bundle());
   const result=spawnSync(process.execPath,[executable.pathname.replace(/^\/([A-Z]:)/,'$1'),'uci',referenceTT,'ucinewgame','position startpos','go depth 5'],{encoding:'utf8',timeout:10000});
   assert.equal(result.status,0,result.stderr);
-  assert.match(result.stdout,/option name Threads type spin default 1 min 1 max 1/);
+  assert.match(result.stdout,/option name Threads type spin default 1 min 1 max 16/);
   assert.deepEqual(scoreLines(result.stdout.trim().split(/\r?\n/)),fixture('start-depth5.json')[0].output);
 });
 test('public benchmark uses all Python positions and preserves warm state',()=>{
@@ -64,7 +64,7 @@ function interactive(t) {
   return {child,lines,send:line=>child.stdin.write(line+'\n'),wait(match) {
     return new Promise((resolve,reject)=>{
       const wait={match,resolve,reject,timer:null};
-      wait.timer=setTimeout(()=>{ waits.delete(wait); reject(new Error('Timed out waiting for UCI output: '+stderr)); },10000);
+      wait.timer=setTimeout(()=>{ waits.delete(wait); reject(new Error('Timed out waiting for UCI output: '+stderr+'; matcher: '+match+'; last lines: '+lines.slice(-6).join(' | '))); },10000);
       waits.add(wait);
     });
   }};
@@ -126,4 +126,64 @@ test('Hash and ReferenceTT settings resize safely after an active search',async 
   assert.ok(e.lines.includes('info string Hash: 896 KiB logical, 86016 entries'));
   waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('ucinewgame'); e.send('position startpos'); e.send('go depth 5'); await waiting;
   e.send('quit');
+});
+
+test('real 2/4-thread MultiPV searches report distinct main-worker PVs and preserve the worker pool',async t=>{
+  const e=interactive(t);
+  for (const num of [2,4]) {
+    let waiting=e.wait(line=>line==='readyok');
+    e.send('setoption name Threads value '+num); e.send('setoption name MultiPV value 3'); e.send('isready'); await waiting;
+    assert.ok(e.lines.includes('info string Threads: '+num));
+    for (let repeat=0;repeat<2;repeat++) {
+      const start=e.lines.length; waiting=e.wait(line=>line.startsWith('bestmove '));
+      e.send('position startpos'); e.send('go depth 6'); const best=await waiting;
+      const pvs=e.lines.slice(start).filter(line=>line.startsWith('info depth 6 ') && line.includes(' score ')).slice(-3);
+      assert.equal(pvs.length,3); assert.deepEqual(pvs.map(line=>Number(/multipv (\d+)/.exec(line)[1])),[1,2,3]);
+      const firstMoves=pvs.map(line=>/ pv (\w+)/.exec(line)[1]); assert.equal(new Set(firstMoves).size,3);
+      assert.equal(best.split(' ')[1],firstMoves[0]);
+    }
+  }
+  const exited=new Promise(resolve=>e.child.once('exit',resolve)); e.send('quit'); assert.equal(await exited,0);
+});
+
+test('SMP global node/time limits and ponderhit finish and permit the next search',async t=>{
+  const e=interactive(t);
+  let waiting=e.wait(line=>line==='readyok'); e.send('setoption name Threads value 4'); e.send('isready'); await waiting;
+  for (const command of ['go nodes 20000','go movetime 100','go wtime 1000 btime 1000']) {
+    const start=Date.now(); waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('position startpos'); e.send(command); await waiting;
+    assert.ok(Date.now()-start<3000,command+' did not stop');
+  }
+  waiting=e.wait(line=>line.startsWith('info depth 5 ')); e.send('go ponder depth 5'); await waiting;
+  waiting=e.wait(line=>line==='readyok'); e.send('isready'); await waiting;
+  const previous=e.lines.filter(line=>line.startsWith('bestmove ')).length;
+  waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('ponderhit'); await waiting;
+  assert.equal(e.lines.filter(line=>line.startsWith('bestmove ')).length,previous+1);
+  waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('go depth 5'); await waiting; e.send('quit');
+});
+
+test('SMP readiness, stop, deferred resizing, new games and terminal roots preserve the receiver',async t=>{
+  const e=interactive(t);
+  let waiting=e.wait(line=>line==='readyok'); e.send('setoption name Threads value 2'); e.send('isready'); await waiting;
+  waiting=e.wait(line=>line.startsWith('info depth 8 ')); e.send('position startpos'); e.send('go infinite'); await waiting;
+  waiting=e.wait(line=>line==='readyok'); e.send('isready'); await waiting;
+  waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('stop'); await waiting;
+  waiting=e.wait(line=>line.startsWith('info depth 8 ')); e.send('go infinite'); await waiting;
+  waiting=e.wait(line=>line==='readyok');
+  e.send('setoption name Threads value 4'); e.send('setoption name Hash value 3'); e.send('isready'); await waiting;
+  assert.ok(e.lines.includes('info string Threads: 4'));
+  assert.ok(e.lines.includes('info string Hash: 3072 KiB logical, 294912 entries'));
+  waiting=e.wait(line=>line.startsWith('info depth 8 ')); e.send('go infinite'); await waiting;
+  waiting=e.wait(line=>line==='readyok'); e.send('ucinewgame'); e.send('isready'); await waiting;
+  waiting=e.wait(line=>line==='bestmove (none)'); e.send('position fen 7k/6Q1/5K2/8/8/8/8/8 b - - 0 1'); e.send('go depth 5'); await waiting;
+  waiting=e.wait(line=>line==='readyok'); e.send('setoption name Threads value 1'); e.send('isready'); await waiting;
+  waiting=e.wait(line=>line.startsWith('bestmove ')); e.send('position startpos'); e.send('go depth 5'); await waiting;
+  const exited=new Promise(resolve=>e.child.once('exit',resolve)); e.send('quit'); assert.equal(await exited,0);
+});
+
+test('public SMP benchmark completes all reference positions',()=>{
+  const result=spawnSync(process.execPath,[executable.pathname.replace(/^\/([A-Z]:)/,'$1'),'bench 1 2 5'],{encoding:'utf8',timeout:15000});
+  assert.equal(result.status,0,result.stderr);
+  assert.equal(result.stdout.split('\n').filter(line=>line.startsWith('position fen')).length,47);
+  assert.equal(result.stdout.split('\n').filter(line=>line.startsWith('bestmove ')).length,47);
+  assert.match(result.stderr,/Nodes searched\s*:\s*[1-9]\d*/);
 });

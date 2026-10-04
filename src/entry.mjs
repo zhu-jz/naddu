@@ -1,5 +1,6 @@
 import {EngineUCI, canonical_command} from './uci.mjs';
 import {set_stop_signal} from './control.mjs';
+import {create_smp_pool,install_smp_helper,report_smp_helper_error} from './smp.mjs';
 
 // The receiver stays responsive while one persistent worker searches. Shared
 // flags interrupt recursion without restarting the engine or losing histories.
@@ -18,10 +19,11 @@ export function create_receiver(send,output,shutdown,signal) {
     command=canonical_command(command); if (!command || quitting) return;
     const token=command.split(' ')[0];
     if (token==='stop' || token==='quit') Atomics.store(signal,0,1);
+    if (token==='ucinewgame' && active && /^go\b/.test(active)) Atomics.store(signal,0,1);
     if (token==='go' && active && /^go\b/.test(active)
       && (/\b(infinite|ponder)\b/.test(active) || !/\b(depth|nodes|movetime|wtime|btime)\b/.test(active))) Atomics.store(signal,0,1);
     if (token==='isready' && active && /^go\b/.test(active)
-      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT)\b/i.test(s))) Atomics.store(signal,0,1);
+      && queue.some(s=>/^setoption name (?:Hash|ReferenceTT|Threads)\b/i.test(s))) Atomics.store(signal,0,1);
     if (token==='ponderhit') Atomics.store(signal,1,1);
     // With no pending setting changes, UCI readiness does not wait for search.
     if (token==='isready' && active && /^go\b/.test(active) && !queue.length) { output('readyok'); return; }
@@ -48,18 +50,27 @@ export function install_entry() {
   const isNode=typeof process!=='undefined' && process.versions && process.versions.node;
   if (isNode) {
     const {Worker,isMainThread,workerData,parentPort}=require('node:worker_threads');
+    if (!isMainThread && workerData && workerData.nadduHelper) {
+      const handle=install_smp_helper(workerData.nadduHelper);
+      parentPort.on('message',message=>{if(handle(message)) parentPort.close();}); return;
+    }
     if (!isMainThread && workerData && workerData.nadduSearch) {
-      set_stop_signal(new Int32Array(workerData.signal));
+      const signal=new Int32Array(workerData.signal); set_stop_signal(signal);
+      const pool=create_smp_pool((index,descriptor)=>{
+        const worker=new Worker(__filename,{workerData:{nadduHelper:descriptor}});
+        worker.on('error',error=>{report_smp_helper_error(descriptor,error);parentPort.postMessage({failure:error.stack});});
+        return {send:message=>worker.postMessage(message),terminate(){worker.terminate();worker.unref();}};
+      },signal);
       const engine=new EngineUCI(line=>parentPort.postMessage({line}),line=>parentPort.postMessage({error:line}),file=>require('node:fs').readFileSync(file,'utf8'));
       parentPort.on('message',command=>{
         try {
           const quit=engine.execute(command); parentPort.postMessage({done:true,quit});
-          if (quit) parentPort.close();
-        } catch (error) { parentPort.postMessage({failure:error.stack}); }
+          if (quit) { pool.shutdown(); parentPort.close(); }
+        } catch (error) { pool.shutdown(); parentPort.postMessage({failure:error.stack}); }
       });
       return;
     }
-    const signal=new Int32Array(new SharedArrayBuffer(8));
+    const signal=new Int32Array(new SharedArrayBuffer(16));
     const worker=new Worker(__filename,{workerData:{nadduSearch:true,signal:signal.buffer}});
     const output=line=>process.stdout.write(String(line)+'\n'), error=line=>process.stderr.write(String(line)+'\n');
     let input=null;
@@ -83,28 +94,50 @@ export function install_entry() {
     return;
   }
   if (typeof postMessage!=='function') return;
-  let engine=null,receiver=null;
+  let engine=null,receiver=null,pool=null,helper=null;
   globalThis.onmessage=event=>{
     const message=event.data;
+    if (message && typeof message==='object' && message.nadduHelper) { helper=install_smp_helper(message.nadduHelper); return; }
+    if (helper) { if(helper(message)) close(); return; }
     // A nested classic worker receives its control buffer before commands.
     if (message && typeof message==='object' && message.nadduSearch) {
-      set_stop_signal(new Int32Array(message.signal));
+      const signal=new Int32Array(message.signal); set_stop_signal(signal);
+      pool=create_smp_pool((index,descriptor)=>{
+        // Browser child startup needs a live event loop. The receiver creates
+        // helpers while this compute worker waits on their shared ready flags.
+        postMessage({helperCreate:descriptor});
+        return {send:message=>postMessage({helperCommand:{index,message}}),terminate:()=>postMessage({helperTerminate:index})};
+      },signal);
       engine=new EngineUCI(line=>postMessage({line}),line=>postMessage({error:line}));
       return;
     }
     if (engine) {
-      const quit=engine.execute(String(message));
-      postMessage({done:true,quit}); if (quit) close(); return;
+      try {
+        const quit=engine.execute(String(message));
+        postMessage({done:true,quit}); if (quit) {pool.shutdown();close();}
+      } catch(error) {pool.shutdown();postMessage({failure:error.stack});}
+      return;
     }
     if (!receiver) {
       if (typeof SharedArrayBuffer==='function' && typeof Worker==='function') {
-        const signal=new Int32Array(new SharedArrayBuffer(8)), worker=new Worker(location.href);
-        receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),()=>{ worker.terminate(); close(); },signal);
+        const signal=new Int32Array(new SharedArrayBuffer(16)), worker=new Worker(location.href);
+        const helpers=new Map();
+        const shutdown=()=>{for(const helper of helpers.values()) helper.terminate();helpers.clear();worker.terminate();close();};
+        receiver=create_receiver(command=>worker.postMessage(command),line=>postMessage(line),shutdown,signal);
         worker.onmessage=event=>{
           const data=event.data;
-          if (data.line!==undefined) postMessage(data.line);
+          if (data.helperCreate) {
+            const descriptor=data.helperCreate, helper=new Worker(location.href); helpers.set(descriptor.index,helper);
+            helper.onerror=event=>{report_smp_helper_error(descriptor,new Error(event.message));event.preventDefault();};
+            helper.postMessage({nadduHelper:descriptor});
+          } else if (data.helperCommand) {
+            const {index,message}=data.helperCommand; helpers.get(index).postMessage(message);
+          } else if (data.helperTerminate!==undefined) {
+            helpers.get(data.helperTerminate)?.terminate(); helpers.delete(data.helperTerminate);
+          } else if (data.line!==undefined) postMessage(data.line);
           else if (data.error!==undefined) postMessage(data.error);
           else if (data.done) receiver.done(data);
+          else if (data.failure) { shutdown(); throw new Error(data.failure); }
         };
         worker.onerror=event=>{ throw new Error(event.message); };
         worker.postMessage({nadduSearch:true,signal:signal.buffer});
